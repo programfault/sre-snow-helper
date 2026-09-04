@@ -1,7 +1,7 @@
 // SRE Helper background service worker
 // Opens the side panel on toolbar icon click; the panel persists across tab switches and page navigation.
-// Also handles Chat Ring Monitor: tab heartbeat registry, desktop notifications, deduplicated
-// ring-trigger routing, and "no gchat tab open" state reporting.
+// Also handles Chat Ring Monitor: tab heartbeat registry, deduplicated ring-trigger
+// routing, offscreen-document ringtone playback, and "no gchat tab open" state reporting.
 
 /* ---------- Storage seeding ---------- */
 
@@ -19,8 +19,9 @@ const DEFAULT_STORAGE = {
   // Ringtones library: [{ id, name, durationSec, mime, dataUrl, sizeBytes, createdAt }]
   sreRingtones: [],
   // Chat monitor rules:
-  // [{ id, ruleName, matchType (exact|contains|selector), matchValue,
-  //    ringtoneId, repeatIntervalSec, maxRepeats, enabled, alertOnStartup }]
+  // [{ id, spaceName, ringtoneId, repeatIntervalSec, maxRepeats, enabled, alertOnStartup }]
+  // A rule matches a Chat space/dm whose sidebar name equals spaceName
+  // (case-insensitive; comma separates multiple names).
   sreChatSpaceRules: [],
   // Master switch and runtime counters persisted so the sidepanel can render
   // a useful status even when all gchat tabs are closed.
@@ -57,18 +58,6 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })
     .catch((error) => console.error("Failed to set side panel behavior:", error));
-
-  // Request notification permission up-front for MV3 SW (Notification permissions
-  // are extension-level — if the user previously granted it stays granted).
-  if (chrome.notifications && typeof chrome.notifications.getPermissionLevel === "function") {
-    try {
-      chrome.notifications.getPermissionLevel((level) => {
-        if (level !== "granted") {
-          console.log("[sre-chat] notification level:", level);
-        }
-      });
-    } catch (_) {}
-  }
 
   seedDefaultStorage();
   // Install-time rollover: reset today counters once on day change.
@@ -155,44 +144,64 @@ function shouldFireRule(ruleId, repeatIntervalSec) {
   return true;
 }
 
-/* ---------- Desktop notifications ---------- */
+/* ---------- Broadcast ring to a real audio player ---------- */
 
-let notifIdCounter = 0;
+// MV3 audio: a service worker cannot play audio. Two routes exist for playing a
+// ringtone:
+//   1) Preferred: an offscreen document created with the AUDIO_PLAYBACK reason.
+//      Chrome plays it unconditionally — it is NOT subject to the page autoplay
+//      policy, so the ringtone rings even if the gchat tab was never clicked or
+//      sits in the background (the case where "system notification arrived but
+//      the chat page stayed silent").
+//   2) Fallback: the alive gchat content scripts, which create an
+//      HTMLAudioElement on the page.
+const OFFSCREEN_URL = "offscreen.html";
+let offscreenReady = false;
 
-function showDesktopNotification(ruleName, spaceName, ruleId) {
-  if (!chrome.notifications) return;
-  const id = `sre-chat-${ruleId}-${++notifIdCounter}-${Date.now()}`;
-  try {
-    chrome.notifications.create(id, {
-      type: "basic",
-      iconUrl: "icons/icon128.png",
-      title: ruleName ? `${ruleName} — new message` : "Google Chat — new message",
-      message: spaceName
-        ? `Space "${spaceName}" has unread messages.`
-        : `A watched Google Chat space has new unread messages.`,
-      priority: 2,
-      requireInteraction: true,
-    });
-  } catch (e) {
-    // iconUrl might not resolve in some environments; fall back to no-icon creation.
-    try {
-      chrome.notifications.create(id, {
-        type: "basic",
-        title: ruleName || "Google Chat — new message",
-        message: spaceName || "New unread message.",
-        priority: 2,
-        requireInteraction: true,
+function playViaOffscreen(dataUrl) {
+  return new Promise((resolve) => {
+    const ask = () => {
+      chrome.runtime.sendMessage(
+        { type: "CHAT_PLAY_RING_OFFSCREEN", dataUrl },
+        (resp) => {
+          if (chrome.runtime.lastError) {
+            return resolve({ ok: false, reason: "offscreen-not-listening" });
+          }
+          resolve(
+            resp && resp.ok
+              ? { ok: true }
+              : { ok: false, reason: (resp && resp.reason) || "play-error" }
+          );
+        }
+      );
+    };
+
+    if (offscreenReady) return ask();
+    if (!chrome.offscreen) return resolve({ ok: false, reason: "offscreen-unavailable" });
+
+    // chrome.offscreen APIs are promise-based. We treat createDocument as
+    // best-effort: whether it created a fresh document or found the existing
+    // one (createDocument errors in that case), we then just ask it to play.
+    chrome.offscreen
+      .createDocument({
+        url: OFFSCREEN_URL,
+        reasons: ["AUDIO_PLAYBACK"],
+        justification:
+          "Play Google Chat ringtones when a monitored space gets a new unread message.",
+      })
+      .then(() => {
+        offscreenReady = true;
+        ask();
+      })
+      .catch(() => {
+        // Most likely "Only a single offscreen document may be created" — a
+        // document left over from an earlier SW session is still usable.
+        offscreenReady = true;
+        ask();
       });
-    } catch (_) {}
-  }
+  });
 }
 
-/* ---------- Broadcast ring to content scripts ---------- */
-
-// Audio playback in MV3: a service worker can't play audio directly. We route
-// the signal back to one of the content scripts; it creates an HTMLAudioElement
-// on the page context (where autoplay is safe after user interaction) and plays
-// the provided data URL.
 async function broadcastRing(ringtoneId, contentPid, triggerTabId) {
   if (!ringtoneId) return { ok: false, reason: "no-ringtone" };
   const data = await new Promise((res) =>
@@ -201,16 +210,20 @@ async function broadcastRing(ringtoneId, contentPid, triggerTabId) {
   const ring = data.find((r) => r.id === ringtoneId);
   if (!ring || !ring.dataUrl) return { ok: false, reason: "ringtone-missing" };
 
-  // Find alive gchat tabs (any URL under chat.google.com). Prefer the tab that
-  // triggered the event so the sound is tied to the page with the new message.
+  // 1) Preferred: offscreen document (not gated by page autoplay policy).
+  const off = await playViaOffscreen(ring.dataUrl);
+  if (off && off.ok) return { ok: true, via: "offscreen", ringtoneName: ring.name };
+  if (off && off.reason) console.log("[sre-chat] offscreen ring failed:", off.reason);
+
+  // 2) Fallback: any alive gchat content script can create an HTMLAudioElement.
   let targetIds = [];
   if (triggerTabId != null) targetIds.push(triggerTabId);
   for (const id of aliveTabs.keys()) if (!targetIds.includes(id)) targetIds.push(id);
 
-  if (targetIds.length === 0) return { ok: false, reason: "no-alive-tab" };
+  if (targetIds.length === 0) {
+    return { ok: false, reason: (off && off.reason) || "no-audio-target" };
+  }
 
-  // Send to all alive tabs. Each content script dedupes internally via
-  // chrome.runtime.sendMessage({type:MSG_PLAY_RING}) and returns once.
   const results = [];
   for (const id of targetIds) {
     try {
@@ -223,11 +236,8 @@ async function broadcastRing(ringtoneId, contentPid, triggerTabId) {
             dataUrl: ring.dataUrl,
           },
           (r) => {
-            if (chrome.runtime.lastError) {
-              res({ ok: false, reason: "send-error" });
-            } else {
-              res(r || { ok: true });
-            }
+            if (chrome.runtime.lastError) res({ ok: false, reason: "send-error" });
+            else res(r || { ok: false, reason: "no-response" });
           }
         );
       });
@@ -236,8 +246,13 @@ async function broadcastRing(ringtoneId, contentPid, triggerTabId) {
     } catch (_) {}
   }
 
-  const ok = results.some((r) => r && r.ok);
-  return { ok, ringtoneName: ring.name };
+  const played = results.find((r) => r && r.ok);
+  if (played) return { ok: true, via: "content", ringtoneName: ring.name };
+  const last = results.length ? results[results.length - 1] : null;
+  const reasons = [];
+  if (off && off.ok === false && off.reason) reasons.push("offscreen:" + off.reason);
+  reasons.push((last && last.reason) || "no-alive-tab");
+  return { ok: false, reason: reasons.join(" | ") };
 }
 
 /* ---------- Message router (content script + sidepanel + options) ---------- */
@@ -286,7 +301,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === MSG.TRY_RING) {
     (async () => {
       rolloverDailyCounters();
-      const { ruleId, ruleName, repeatIntervalSec, ringtoneId, spaceName, tabId } =
+      const { ruleId, ruleName, repeatIntervalSec, ringtoneId, tabId } =
         msg || {};
       if (!shouldFireRule(ruleId, repeatIntervalSec)) {
         sendResponse({ ok: false, deduped: true });
@@ -300,11 +315,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.storage.local.set({ sreChatMonitor: state });
       });
 
-      // Desktop notification (best effort).
-      showDesktopNotification(ruleName, spaceName, ruleId);
-
-      // Route ring back to an alive tab to actually play audio.
+      // Route the ringtone back to an audio player (offscreen doc preferred).
       const ringResp = await broadcastRing(ringtoneId, undefined, tabId || (sender && sender.tab ? sender.tab.id : undefined));
+      if (ringResp && !ringResp.ok) {
+        console.log("[sre-chat] ring failed for rule '" + (ruleName || ruleId) + "':", ringResp.reason);
+      }
       sendResponse({ ok: true, ring: ringResp });
     })();
     return true; // async

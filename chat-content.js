@@ -5,18 +5,31 @@
 //      answer "is any gchat tab open?".
 //   2. Detecting the sidebar space items and their unread badges.
 //   3. Running an IDLE/ALERTING state machine per configured rule:
-//        IDLE (unread=0)  ───  from 0 → >0  ───▶   立即响铃 + 桌面通知
+//        IDLE (unread=0)  ───  from 0 → >0  ───▶   立即响铃
 //                              进入 ALERTING
 //                              每 repeatIntervalSec 检查一次
 //                                ├─ 还未读 && 次数<max → 再响
 //                                └─ 已读（未读清零）→ IDLE
-//   4. When the background routes a ring-broadcast back to us (SW can't play
-//      audio directly), play it via an HTMLAudioElement on the page.
+//   4. When the background routes a ring-broadcast back to us (fallback path —
+//      the primary path is an offscreen audio document), play it via an
+//      HTMLAudioElement on the page.
 
-/* ---------- Self-guard: only one instance per page ---------- */
+/* ---------- Self-guard: exactly one live instance per page ----------
+ *
+ * MV3 quirk: when the unpacked extension is "Reload"-ed while a chat tab is
+ * still open, Chrome can inject the content script AGAIN on top of the still
+ * running old copy. Two side-by-side copies would double every heartbeat,
+ * observer and ring listener.
+ *
+ * We therefore wrap this whole file in an IIFE and treat an existing copy as
+ * stale: the previous instance tears itself down (timers, observers AND its
+ * onMessage listener — all tracked below) and we start a fresh copy. Because
+ * everything lives inside the IIFE's function scope, the old copy's top-level
+ * `const`/`let` can never clash with the new one's (that clash used to throw
+ * "Identifier 'MSG' has already been declared" and killed the script silently,
+ * which is why no [sre-chat] log ever appeared). */
+(() => {
 if (window.__SRE_CHAT_RUNNING__) {
-  // In MV3 extension reloads the content script is re-injected on top of the
-  // old one. Tear down the prior instance's timers/observers first.
   try {
     if (window.__SRE_CHAT_TEARDOWN__) window.__SRE_CHAT_TEARDOWN__();
   } catch (_) {}
@@ -35,8 +48,9 @@ const MSG = {
 /* ---------- Local state ---------- */
 /** @type {Array} */
 let rules = []; // latest sreChatSpaceRules from storage
-let monitorEnabled = false; // latest sreChatMonitor.monitorEnabled
 let ringtones = []; // for resolving display names in state push messages
+// monitorEnabled is defined later, next to loadStorageAndBoot (monitoring is on
+// iff at least one rule is enabled; there is no master-switch storage field).
 
 // Per-rule local state machine: { <ruleId>: { state, lastUnread, repeatCount, timer } }
 const ruleState = new Map();
@@ -75,116 +89,201 @@ function safeSendMessage(payload, cb) {
 }
 
 function parseSpaceListItems() {
-  // Return an array of candidate space records collected from the side nav.
-  // Each record is: { name, hasUnread, unreadCount, el }.
+  // Google Chat real DOM (2026): sidebar items are <span class="IL9EXe ..."
+  // data-group-id="space/<ID>">.  The name is the FIRST \n-separated line of
+  // innerText (further lines are "Space" / "Meeting conversation" / etc.).
+  // data-group-id=space/ still works (confirmed via user diagnostics).
   //
-  // Google Chat's DOM is version-dependent, so we use several heuristics:
-  //   1. list items with data-group-id^="space/" (old reliable class)
-  //   2. any <a> or [role=listitem] containing a numeric unread badge
-  //   3. fallback: visible list-like nodes matching common chat side nav markers
+  // Strategy:
+  //   1) Primary: span[data-group-id^="space/"]
+  //   2) Fallback: any [role="listitem"] whose first-line text looks reasonable.
+  //   3) We do NOT filter on offsetParent === null because modern Material
+  //      design wraps visible items in layout-<span> trees whose offsetParent
+  //      is null even though the <span> itself is visible.
   //
-  // We deliberately avoid exact class names because Google rewrites them.
+  // Unread badge detection (3 strategies, OR-ed):
+  //   A) Pure 1-3 digit text in a descendant element's innerText.
+  //   B) Descendant element with aria-label matching "unread/new messages/未读".
+  //   C) Lines of innerText that contain new-message words like "new",
+  //      "unread", "未读" (these are the "1 new" / "未读 1 条" strings that
+  //      Google sometimes shows instead of a separated number badge).
+  //
+  // This function is the sole source of Space + unread truth for the state
+  // machine; if it returns stale the whole monitor is dead.
+
   const results = [];
   const seen = new WeakSet();
+
+  // Name of a sidebar item. Google Chat prepends an unread marker to the title
+  // line when the space has unread messages, e.g. innerText:
+  //   "Unread\nOnlyForTest Space\nOpen in a pop-up\nOptions"
+  // or, when inlined:
+  //   "Unread OnlyForTest Space\n..."
+  // We therefore skip pure-noise / unread-marker lines and strip a leading
+  // "Unread"/"New message"/"未读"/"新消息" token that may be glued to the title.
+  function itemNameFromText(innerText) {
+    const lines = (innerText || "").split(/\n/).map((s) => s.trim()).filter(Boolean);
+    for (const raw of lines) {
+      const low = raw.toLowerCase();
+      if (
+        /^(open in a pop-up|options|go back|back|you|google workspace tools|suggested contact|away|meeting conversation)$/.test(low)
+      ) {
+        continue;
+      }
+      if (/^(unread|new message|new messages|未读|新消息)$/.test(low)) {
+        continue; // pure unread marker — the name is on a following line
+      }
+      // Strip a leading unread marker glued to the title ("Unread OnlyForTest Space")
+      const stripped = raw
+        .replace(/^(unread|new message|new messages|未读|新消息)[\s:：]+/i, "")
+        .trim();
+      if (stripped.length >= 2) return stripped;
+    }
+    return lines[0] || "";
+  }
+
+  // Detect whether a sidebar item has unread badge/messages.
+  //
+  // Google Chat DOM fact (verified against live markup): the SAME row carries a
+  // persistent <span class="mL1cqe">Unread</span> label in BOTH the read and
+  // unread states — it is only visually hidden via CSS when read. So the word
+  // "Unread" is NOT a usable signal. The actual difference is:
+  //   read:   preview container is empty, no numeric chip anywhere
+  //   unread: a numeric chip (e.g. <span aria-hidden="true">1</span>) plus a
+  //           "N Notification" line appears inside the preview container.
+  // Therefore we ONLY trust (1) a small pure-number chip inside the row, and
+  // (2) numbered/word unread markers that explicitly carry a count.
+  function detectUnread(el) {
+    const baseText = el.innerText || "";
+    let hasUnread = false;
+    let unreadCount = 0;
+    const bump = (n) => {
+      hasUnread = true;
+      if (n > 0) unreadCount = Math.max(unreadCount, n);
+    };
+
+    // (A) Small pure-number descendant chip (the classic unread badge). Read
+    // rows have none; unread rows carry one next to "N Notification".
+    const smalls = el.querySelectorAll("span, div, b, strong, sup, sub");
+    for (const s of smalls) {
+      const t = (s.textContent || "").trim();
+      if (!t) continue;
+      if (/^\d{1,3}$/.test(t)) {
+        const n = parseInt(t, 10);
+        if (n > 0 && n < 1000) bump(n);
+      }
+    }
+
+    // (B) ARIA / a11y badge labels carrying an unread/notification meaning.
+    const labelTargets = el.querySelectorAll("*");
+    for (const s of labelTargets) {
+      const aria =
+        (s.getAttribute && s.getAttribute("aria-label")) ||
+        (s.getAttribute && s.getAttribute("title")) ||
+        "";
+      if (!aria) continue;
+      if (/(unread|new\s+message|new\s+msg|notification|未读|新消息|新的消息)/i.test(aria)) {
+        const m = aria.match(/(\d{1,3})/);
+        bump(m ? parseInt(m[1], 10) : 1);
+      }
+    }
+
+    // (C) Counted text markers in the row's own innerText, e.g. "1 Notification",
+    // "(3)" at the end, "3 new messages", "2 未读", "5 条新消息".
+    // Note: a bare "Unread" / "Notification" word WITHOUT any count is NOT
+    // trusted alone (the row shows it even when read).
+    if (!hasUnread) {
+      const norm = baseText.replace(/\s+/g, " ").trim();
+      const pm = norm.match(/\((\d{1,3})\)\s*$/);
+      const nm = norm.match(
+        /(\d{1,3})\s*(notifications?|new\b\s*messages?|unread|未读|条\s*新?消息)/i
+      );
+      if (pm || nm) {
+        bump(pm ? parseInt(pm[1], 10) : parseInt(nm[1], 10));
+      }
+    }
+
+    // (D) The "Notification" word is a strong unread signal on its own: the
+    // user's original working script keyed on exactly this (space row text
+    // contains "Notification" only while unread — read rows never render it).
+    // The word sits in the unread preview area next to the numeric chip.
+    if (!hasUnread) {
+      const norm = baseText.replace(/\s+/g, " ").trim();
+      if (/(?:^|[\s(])(notifications?)(?:[\s)]|$)/i.test(norm)) {
+        const m = norm.match(/(\d{1,3})\s+notifications?/i);
+        bump(m ? parseInt(m[1], 10) : 1);
+      }
+    }
+
+    return { hasUnread, unreadCount };
+  }
+
+  // Elements that are clearly NOT sidebar space rows (main conversation panel,
+  // composer, dialog). Excluding them stops reaction counts / message bodies
+  // from being misread as unread badges.
+  const BLOCKLIST_NAMES = new Set([
+    "go back", "back", "options", "you",
+    "google workspace tools", "open in a pop-up",
+  ]);
 
   function collect(candidates) {
     if (!candidates) return;
     for (const el of candidates) {
       if (!el || seen.has(el)) continue;
-      if (el.offsetParent === null) continue; // not visible
-      const text = (el.innerText || "").trim();
-      if (!text) continue;
-
-      // Extract name = all lines that don't look like timestamps or message snippets
-      // (heuristic: first line, or the line that does NOT start with a digit badge char)
-      const lines = text.split(/\n/).map((s) => s.trim()).filter(Boolean);
-      if (lines.length === 0) continue;
-
-      // Find any small numeric badge (1-3 digits) rendered near this item.
-      // Strategy: walk descendants, pick any element whose innerText is a pure
-      // number 1..9999 and occupies a visibly small text span.
-      let hasUnread = false;
-      let unreadCount = 0;
-      // Heuristic 1: look for pure numeric spans within this item's subtree
-      // that are not long dates/times.
-      const smallSpans = el.querySelectorAll(
-        "span, div[class], b, strong, sup, sub"
-      );
-      for (const s of smallSpans) {
-        const t = (s.innerText || "").trim();
-        if (/^\d{1,3}$/.test(t)) {
-          const n = parseInt(t, 10);
-          if (n > 0 && n < 1000) {
-            hasUnread = true;
-            unreadCount = Math.max(unreadCount, n);
-          }
-        }
-      }
-      // Heuristic 2: if we didn't find a badge subtree yet, but the item's text
-      // lines end with something like " (3)", use that.
-      if (!hasUnread) {
-        for (const l of lines) {
-          const m = l.match(/\((\d{1,3})\)\s*$/);
-          if (m) {
-            hasUnread = true;
-            unreadCount = Math.max(unreadCount, parseInt(m[1], 10));
-          }
-        }
-      }
-
-      // Final guard: discard items whose name is too generic (avoids capturing
-      // "Home", "Chats", etc., if they happen to look structurally similar).
-      // Keep a record only if the visible text is >= 2 chars (skips icons alone).
-      const name = lines[0] || "";
+      // Visibility guard: try a reasonable check, but softer than
+      // offsetParent === null which kills wrapped spans.
+      try {
+        const rect = el.getBoundingClientRect
+          ? el.getBoundingClientRect()
+          : { width: 0, height: 0 };
+        if (rect.width + rect.height === 0) continue;
+        // Sidebar rows are small (roughly ≤560px wide, ≤140px tall). The main
+        // conversation panel + composer for the OPEN space also carry the same
+        // data-group-id, so drop anything conversation-sized.
+        if (rect.height > 140 || rect.width > 560) continue;
+      } catch (_) {}
+      const text = el.innerText || "";
+      const name = itemNameFromText(text);
       if (name.length < 2) continue;
+      if (BLOCKLIST_NAMES.has(name.toLowerCase())) continue;
 
+      // Dedupe by (name + first 100 chars of text). If two entries produce
+      // the same visible "row" we keep the first match.
+      const dedupeKey = name + "||" + text.slice(0, 100);
+      if (results.findIndex((r) => r._key === dedupeKey) >= 0) continue;
+
+      const { hasUnread, unreadCount } = detectUnread(el);
       seen.add(el);
-      results.push({ name, hasUnread, unreadCount, el });
+      results.push({ name, hasUnread, unreadCount, el, _key: dedupeKey });
     }
   }
 
-  // Priority 1: list items with space-like data-group-id.
+  // Priority 1: space data-group-id (most reliable).
   collect(document.querySelectorAll('[data-group-id^="space/"]'));
-  // Priority 2: items with role=listitem inside common sidebars.
-  collect(document.querySelectorAll('aside [role="listitem"], nav [role="listitem"]'));
-  // Priority 3: any <a> inside a sidebar with a numeric badge (very broad fallback).
-  collect(document.querySelectorAll("aside a, nav a"));
+  // Priority 2: dm data-group-id (1:1 conversations are also watched as "spaces").
+  collect(document.querySelectorAll('[data-group-id^="dm/"]'));
+  // Priority 3: listitem items in body-sidebars (fallback if above attr ever removed).
+  collect(document.querySelectorAll('[role="listitem"]'));
 
-  return results;
+  // Strip private dedupe key before returning.
+  return results.map(({ _key, ...rest }) => rest);
+}
+
+// Human label for a rule — the Space name it watches. Legacy fields
+// (matchValue / ruleName) are tolerated until the rule is next saved.
+function ruleLabel(rule) {
+  return (rule && (rule.spaceName || rule.matchValue || rule.ruleName)) || rule.id || "space";
 }
 
 function ruleMatches(rule, space) {
-  const t = rule.matchType;
-  const name = space.name || "";
-  const el = space.el;
-  switch (t) {
-    case "exact":
-      return rule.matchValue
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .some((v) => name === v);
-    case "contains":
-      return rule.matchValue
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .some((v) => name.toLowerCase().includes(v.toLowerCase()));
-    case "selector": {
-      if (!el || !rule.matchValue) return false;
-      try {
-        // Run custom selector against the space element or document.
-        const needle = rule.matchValue.trim();
-        if (el.matches && el.matches(needle)) return true;
-        if (document.querySelector(needle) === el) return true;
-        return false;
-      } catch (_) {
-        return false;
-      }
-    }
-    default:
-      return false;
-  }
+  const name = (space.name || "").trim().toLowerCase();
+  if (!name) return false;
+  // Space name match, exact & case-insensitive. Comma separates multiple names.
+  return ruleLabel(rule)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .some((v) => name === v.toLowerCase());
 }
 
 /**
@@ -213,25 +312,32 @@ function snapshotRuleUnread() {
 /* ---------- Ring playback (background -> content) ---------- */
 
 function playRingtone(dataUrl) {
-  try {
-    const audio = new Audio(dataUrl);
+  return new Promise((resolve) => {
+    let audio;
+    try {
+      audio = new Audio(dataUrl);
+    } catch (e) {
+      resolve({ ok: false, reason: String(e) });
+      return;
+    }
     audio.volume = 1.0;
     audio.play().then(
-      () => {},
+      () => {
+        // Keep the element referenced so GC doesn't cut playback short.
+        _audioEls.push(audio);
+        resolve({ ok: true });
+      },
       (err) => {
-        // Autoplay policies may block this until user-interaction. Best-effort.
+        // Autoplay policies may block this until user interaction. Best-effort.
         log("play ring failed:", err && err.message);
+        resolve({ ok: false, reason: (err && err.message) || "autoplay-blocked" });
       }
     );
     audio.addEventListener("ended", () => {
       const idx = _audioEls.indexOf(audio);
       if (idx >= 0) _audioEls.splice(idx, 1);
     });
-    _audioEls.push(audio);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: String(e) };
-  }
+  });
 }
 
 // Unlock autoplay on first user interaction: AudioContext / Audio play() after
@@ -267,12 +373,18 @@ function alertRule(rule, matchedName) {
       {
         type: MSG.TRY_RING,
         ruleId: rule.id,
-        ruleName: rule.ruleName,
+        ruleName: ruleLabel(rule),
         repeatIntervalSec: rule.repeatIntervalSec || 10,
         ringtoneId: rule.ringtoneId,
-        spaceName: matchedName || rule.ruleName,
+        spaceName: matchedName || ruleLabel(rule),
       },
-      (resp) => resolve(resp || { ok: false })
+      (resp) => {
+        const ring = resp && resp.ring;
+        if (ring && !ring.ok) {
+          log("ring failed:", ring.reason || "unknown");
+        }
+        resolve(resp || { ok: false });
+      }
     );
   });
 }
@@ -324,6 +436,14 @@ function startRuleStateMachine(initialSnapshot) {
       since: Date.now(),
       lastAlertAt: startAlerting ? Date.now() : null,
       timer: null,
+      // Baseline unread count when this rule instance booted. Used to detect
+      // "new message arrived while an old backlog was still unread" — without
+      // this, refreshing with N unread and then receiving N+1 never fires
+      // because the trigger used to require lastUnread === 0.
+      bootCount: snap.count,
+      // True once we have observed this space fully read (count reached 0)
+      // since boot. Fresh 0→N after that is always a brand-new message.
+      seenZero: snap.count === 0,
     };
     ruleState.set(rule.id, st);
 
@@ -350,19 +470,49 @@ function applySnapshotsToStateMachine(snap) {
       repeatCount: 0,
       since: Date.now(),
       timer: null,
+      bootCount: 0,
+      seenZero: true,
     };
     if (!ruleState.has(rule.id)) ruleState.set(rule.id, st);
 
     const intervalSec = Math.max(1, rule.repeatIntervalSec || 10);
     const maxR = Math.max(1, rule.maxRepeats || 20);
 
-    // Transition: IDLE + unread 0→>0 => ALERTING + ring now
-    if (st.state === "IDLE" && now.hasUnread && st.lastUnread === 0) {
+    // While IDLE (possibly armed with a pre-existing backlog), if the space is
+    // now observed fully read, disarm: the next 0→N will always be a brand-new
+    // message regardless of how large the old backlog was.
+    if (st.state === "IDLE" && !now.hasUnread && now.count === 0) {
+      if (!st.seenZero || st.bootCount !== 0) {
+        st.seenZero = true;
+        st.bootCount = 0;
+        st.lastUnread = 0;
+      }
+    }
+
+    // Transition: IDLE → ALERTING. A rule leaves IDLE when a genuinely new
+    // message arrives relative to what this tab instance has already seen.
+    // We do NOT require lastUnread === 0 (that missed the common case where
+    // the tab was refreshed while old messages were still unread).
+    //
+    //   now.count > 0 AND any of:
+    //     (a) st.seenZero            — the space has been observed fully read
+    //                                  (or booted at 0), so any unread is new
+    //     (b) now.count > st.bootCount — grew beyond the backlog that existed
+    //                                  when this tab loaded → new message while
+    //                                  old ones were still unread
+    //     (c) st.bootCount === 0     — booted clean, any unread is new
+    if (
+      st.state === "IDLE" &&
+      now.hasUnread &&
+      now.count > 0 &&
+      (st.seenZero || now.count > st.bootCount || st.bootCount === 0)
+    ) {
       st.state = "ALERTING";
       st.since = Date.now();
       st.lastAlertAt = Date.now();
       st.repeatCount = 1;
       stateChanged = true;
+      log("new message detected → ring: " + ruleLabel(rule));
       // Fire-and-forget ring
       alertRule(rule);
       // Install per-rule repeater timer
@@ -377,6 +527,8 @@ function applySnapshotsToStateMachine(snap) {
           currentSt.state = "IDLE";
           currentSt.lastUnread = 0;
           currentSt.repeatCount = 0;
+          currentSt.bootCount = 0;
+          currentSt.seenZero = true;
           if (currentSt.timer) clearInterval(currentSt.timer);
           currentSt.timer = null;
           pushRuleStateToStorage();
@@ -401,9 +553,12 @@ function applySnapshotsToStateMachine(snap) {
       st.state = "IDLE";
       st.repeatCount = 0;
       st.lastAlertAt = null;
+      st.bootCount = 0;
+      st.seenZero = true;
       if (st.timer) clearInterval(st.timer);
       st.timer = null;
       stateChanged = true;
+      log("read → IDLE: " + ruleLabel(rule));
     }
 
     st.lastUnread = now.count;
@@ -460,48 +615,67 @@ function stopDetection() {
 
 /* ---------- Storage sync ---------- */
 
+// There is deliberately NO master switch anymore. Monitoring is ON iff at least
+// one rule is enabled (per-rule toggles in the sidepanel / options page). We
+// track the previous value only to log transitions once (not per storage event).
+let monitorEnabled = false;
+
 function loadStorageAndBoot() {
-  const keys = ["sreChatSpaceRules", "sreChatMonitor", "sreRingtones"];
-  chrome.storage.local.get(keys, (data) => {
+  chrome.storage.local.get(["sreChatSpaceRules", "sreRingtones"], (data) => {
     rules = Array.isArray(data.sreChatSpaceRules) ? data.sreChatSpaceRules : [];
     ringtones = Array.isArray(data.sreRingtones) ? data.sreRingtones : [];
-    const monitor = data.sreChatMonitor || { monitorEnabled: false };
-    monitorEnabled = Boolean(monitor.monitorEnabled);
 
+    const wasEnabled = monitorEnabled;
+    const nowEnabled = rules.some((r) => r.enabled);
+    monitorEnabled = nowEnabled;
+
+    // Full clean restart every time rules change: stop observers/pollers and
+    // per-rule timers, then (re)start only if something is actually enabled.
     teardownRuleTimers();
+    stopDetection();
     if (monitorEnabled) {
       const snap = snapshotRuleUnread();
       startRuleStateMachine(snap);
       startDetection();
+      if (!wasEnabled) {
+        log("monitoring started: " + rules.filter((r) => r.enabled).length + " rule(s) enabled");
+      }
     } else {
-      stopDetection();
-      pushRuleStateToStorage();
+      if (wasEnabled) log("monitoring stopped: no rule enabled");
     }
+    pushRuleStateToStorage();
   });
 }
 
+// Reload the boot state only when the RULE LIST changes (user toggles/edits a
+// rule). NOT on sreRingtones/sreChatMonitor writes — background updates
+// sreChatMonitor.perRule on every state push/ring, and reacting to those would
+// tear down and restart the whole monitor repeatedly.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (
-    changes.sreChatSpaceRules ||
-    changes.sreChatMonitor ||
-    changes.sreRingtones
-  ) {
+  if (changes.sreChatSpaceRules) {
     loadStorageAndBoot();
   }
 });
 
 /* ---------- Message listener (background ring broadcast) ---------- */
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || typeof msg.type !== "string") return false;
-  if (msg.type === MSG.PLAY_RING && msg.dataUrl) {
-    const res = playRingtone(msg.dataUrl);
-    sendResponse(res);
-    return false;
+let _msgListener = null;
+function registerMessageListener() {
+  if (_msgListener && chrome.runtime && chrome.runtime.onMessage) {
+    try { chrome.runtime.onMessage.removeListener(_msgListener); } catch (_) {}
   }
-  return false;
-});
+  _msgListener = (msg, sender, sendResponse) => {
+    if (!msg || typeof msg.type !== "string") return false;
+    if (msg.type === MSG.PLAY_RING && msg.dataUrl) {
+      // Report the REAL playback result back (ok:false when autoplay blocked).
+      playRingtone(msg.dataUrl).then(sendResponse);
+      return true; // async response
+    }
+    return false;
+  };
+  chrome.runtime.onMessage.addListener(_msgListener);
+}
 
 /* ---------- Heartbeat + teardown ---------- */
 
@@ -531,6 +705,10 @@ function teardownEverything() {
     heartbeatTimer = null;
   }
   teardownRuleTimers();
+  if (_msgListener && chrome.runtime && chrome.runtime.onMessage) {
+    try { chrome.runtime.onMessage.removeListener(_msgListener); } catch (_) {}
+    _msgListener = null;
+  }
   window.removeEventListener("beforeunload", onBeforeUnload);
   window.__SRE_CHAT_RUNNING__ = false;
   window.__SRE_CHAT_TEARDOWN__ = null;
@@ -538,11 +716,11 @@ function teardownEverything() {
 window.__SRE_CHAT_TEARDOWN__ = teardownEverything;
 
 function main() {
+  registerMessageListener();
   unlockAutoplay();
   window.addEventListener("beforeunload", onBeforeUnload);
   startHeartbeat();
   loadStorageAndBoot();
-  log("content script booted");
 }
 
 if (document.readyState === "loading") {
@@ -550,3 +728,4 @@ if (document.readyState === "loading") {
 } else {
   main();
 }
+})();

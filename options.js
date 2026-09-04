@@ -983,21 +983,16 @@ function ringtoneNameById(id) {
   return r ? r.name : "(none)";
 }
 
-function matchTypeLabel(t) {
-  switch (t) {
-    case "exact": return "name exact";
-    case "contains": return "name contains";
-    case "selector": return "custom selector";
-    default: return String(t || "—");
-  }
+// Legacy rules (saved before the matchType/ruleName simplification) may still
+// carry matchValue / ruleName instead of spaceName — always read through here.
+function ruleSpaceName(rule) {
+  return (rule && (rule.spaceName || rule.matchValue || rule.ruleName)) || "";
 }
 
 function emptyRuleDraft() {
   return {
     id: null,
-    ruleName: "",
-    matchType: "contains",
-    matchValue: "",
+    spaceName: "",
     ringtoneId: ringtones[0] ? ringtones[0].id : "",
     repeatIntervalSec: 10,
     maxRepeats: 20,
@@ -1018,7 +1013,7 @@ function fillChatRuleForm(rule) {
   card.className = "rule-editor-card";
   const title = document.createElement("div");
   title.className = "rule-editor-title";
-  title.textContent = editingRuleId ? `Editing rule · ${draft.ruleName || "(unnamed)"}` : "Create a new rule";
+  title.textContent = editingRuleId ? `Editing rule · ${ruleSpaceName(draft) || "(unnamed)"}` : "Create a new rule";
   card.appendChild(title);
 
   const grid = document.createElement("div");
@@ -1059,29 +1054,9 @@ function fillChatRuleForm(rule) {
     return inp;
   };
 
-  const name = mkInput(draft.ruleName);
-  addField("Rule name", name, "Displayed in the side panel and notifications. Not used for matching.");
-
-  const matchType = document.createElement("select");
-  matchType.className = "select";
-  for (const [v, label] of [
-    ["contains", "Space name (contains)"],
-    ["exact",    "Space name (exact)"],
-    ["selector", "Custom selector"],
-  ]) {
-    const opt = document.createElement("option");
-    opt.value = v;
-    opt.textContent = label;
-    if (v === draft.matchType) opt.selected = true;
-    matchType.appendChild(opt);
-  }
-  addField("Match by", matchType, "Contains is forgiving, exact avoids over-matching. Selector lets you use arbitrary CSS on sidebar items (advanced).", "full");
-
-  const matchValue = mkInput(draft.matchValue);
-  addField("Match value", matchValue,
-    draft.matchType === "selector"
-      ? "CSS selector (e.g. [data-group-id='space/AAAabc123']). The matched element or its containing listitem will be watched."
-      : "Space name substring or exact name. Multiple values accepted separated by commas.",
+  const space = mkInput(ruleSpaceName(draft));
+  addField("Space name", space,
+    "Sidebar name of the Space or DM. Matched exactly (case-insensitive); comma-separate multiple names.",
     "full");
 
   const ringtoneSel = document.createElement("select");
@@ -1193,13 +1168,18 @@ function fillChatRuleForm(rule) {
   save.className = "btn btn-primary";
   save.textContent = editingRuleId ? "Save rule" : "Create rule";
   save.addEventListener("click", () => {
+    const spaceVal = (space.value || "").trim();
+    if (!spaceVal) {
+      space.style.borderColor = "var(--danger, #e5484d)";
+      space.focus();
+      space.addEventListener("input", () => { space.style.borderColor = ""; }, { once: true });
+      return;
+    }
     const ruleInterval = parseInt(interval.value, 10);
     const ruleMaxR = parseInt(maxR.value, 10);
     const saved = {
       id: editingRuleId || uid(),
-      ruleName: (name.value || "").trim() || "(unnamed)",
-      matchType: matchType.value,
-      matchValue: (matchValue.value || "").trim(),
+      spaceName: spaceVal,
       ringtoneId: ringtoneSel.value || "",
       repeatIntervalSec: isFinite(ruleInterval) && ruleInterval > 0 ? ruleInterval : 10,
       maxRepeats: !isFinite(ruleMaxR) || ruleMaxR <= 0 ? 0 : ruleMaxR,
@@ -1212,6 +1192,7 @@ function fillChatRuleForm(rule) {
       chatRules.push(saved);
     }
     persistChatRules();
+    renderChatRules();
     editingRuleId = null;
     const w = document.getElementById("chatRulesEditForm");
     if (w) w.innerHTML = "";
@@ -1252,7 +1233,7 @@ function renderChatRules() {
     main.className = "rule-card-main";
     const titleRow = document.createElement("div");
     titleRow.className = "rule-card-title";
-    titleRow.textContent = rule.ruleName;
+    titleRow.textContent = ruleSpaceName(rule) || "(unnamed)";
     if (rule.enabled) {
       const b = document.createElement("span");
       b.className = "state-badge ref-badge";
@@ -1269,7 +1250,6 @@ function renderChatRules() {
     const meta = document.createElement("div");
     meta.className = "rule-card-meta";
     const chips = [
-      `${matchTypeLabel(rule.matchType)}: ${rule.matchValue || "(empty)"}`,
       `ringtone: ${ringtoneNameById(rule.ringtoneId)}`,
       `${rule.repeatIntervalSec || 10}s / ×${rule.maxRepeats || 0 || "∞"}`,
     ];
@@ -1295,6 +1275,7 @@ function renderChatRules() {
     del.addEventListener("click", () => {
       chatRules = chatRules.filter((r) => r.id !== rule.id);
       persistChatRules();
+      renderChatRules();
     });
     actions.appendChild(edit); actions.appendChild(del);
 

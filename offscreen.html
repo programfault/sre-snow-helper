@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SRE Helper — ringtone player</title>
+  </head>
+  <body>
+    <!-- Dedicated offscreen document for ringtone playback. The MV3 service
+         worker cannot play audio, and a chat.google.com content script can only
+         autoplay after the user has clicked that page at least once. Chrome
+         created this document with the AUDIO_PLAYBACK reason, so it may play
+         sound unconditionally — the ringtone rings even when the chat tab is
+         in the background or was never clicked. -->
+    <script src="offscreen.js"></script>
+  </body>
+</html>

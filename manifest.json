@@ -3,7 +3,7 @@
   "name": "SRE Helper",
   "version": "1.0.0",
   "description": "SRE Helper: a persistent right-side panel that stays open across tab switches and page navigation.",
-  "permissions": ["sidePanel", "storage", "notifications", "tabs"],
+  "permissions": ["sidePanel", "storage", "tabs", "offscreen"],
   "host_permissions": ["*://chat.google.com/*"],
   "background": {
     "service_worker": "background.js"

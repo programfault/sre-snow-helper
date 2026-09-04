@@ -127,7 +127,7 @@ body {
 }
 
 .mega-header:hover {
-  background: var(--bg);
+  background: var(--primary-soft);
 }
 
 .mega-toggle {
@@ -188,7 +188,7 @@ body {
 }
 
 .pb-card-header:hover {
-  background: var(--bg);
+  background: var(--primary-soft);
 }
 
 .pb-card-toggle {

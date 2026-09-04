@@ -63,16 +63,6 @@ function persistState() {
 
 /* ---------- Chat Ring Monitor (side panel UI) ---------- */
 
-// Match-type helper: short human-readable label
-function crmMatchLabel(rule) {
-  switch (rule.matchType) {
-    case "exact": return `name = "${rule.matchValue}"`;
-    case "contains": return `name ~ "${rule.matchValue}"`;
-    case "selector": return `selector: ${rule.matchValue}`;
-    default: return String(rule.matchValue || "");
-  }
-}
-
 function ringtoneName(ringtones, ringtoneId) {
   const r = ringtones.find((x) => x.id === ringtoneId);
   return r ? r.name : "(none)";
@@ -107,10 +97,11 @@ function openChatTab() {
   } catch (_) {}
 }
 
-function renderChatMonitorPanel(rules, monitor) {
+function renderChatMonitorPanel(rules, monitor, ringtones) {
   const globalEnabled = rules.some((r) => r.enabled);
   const perRule = monitor.perRule || {};
   const aliveTabCount = typeof monitor._aliveTabCount === "number" ? monitor._aliveTabCount : -1;
+  const ringtoneLib = ringtones || [];
 
   // Root uses the same mega-panel class as Playbooks for visual parity.
   const panel = document.createElement("div");
@@ -230,10 +221,11 @@ function renderChatMonitorPanel(rules, monitor) {
       const row1 = document.createElement("div");
       row1.style.fontWeight = "600";
       row1.style.fontSize = "13px";
-      row1.textContent = rule.ruleName || "(unnamed)";
+      row1.textContent = rule.spaceName || rule.matchValue || rule.ruleName || "(unnamed)";
       const row2 = document.createElement("div");
       row2.className = "chat-rule-meta";
-      row2.innerHTML = `<span>${crmMatchLabel(rule)}</span>`;
+      const rtName = ringtoneName(ringtoneLib, rule.ringtoneId);
+      if (rtName && rtName !== "(none)") row2.textContent = "ringtone · " + rtName;
       left.appendChild(row1); left.appendChild(row2);
 
       const rightRow = document.createElement("div");
@@ -303,7 +295,7 @@ function render(data) {
   contentEl.innerHTML = "";
 
   // 1) Chat Ring Monitor — appears above the Playbooks mega panel.
-  contentEl.appendChild(renderChatMonitorPanel(chatRules, chatMonitor));
+  contentEl.appendChild(renderChatMonitorPanel(chatRules, chatMonitor, data.ringtones || []));
 
   // 2) Playbooks mega panel.
   if (!playbooks || playbooks.length === 0) {
