@@ -645,6 +645,12 @@
   <script src="codemirror/foldcode.js"></script>
   <script src="codemirror/foldgutter.js"></script>
   <script src="codemirror/indent-fold.js"></script>
-  <script src="options.js"></script>
+  <!-- options logic, split by subsystem; load order matters (classic scripts share global scope). -->
+  <script src="options-core.js"></script>
+  <script src="options-cards.js"></script>
+  <script src="options-forms.js"></script>
+  <script src="options-init.js"></script>
+  <script src="options-ringtones.js"></script>
+  <script src="options-chatspaces.js"></script>
 </body>
 </html>
