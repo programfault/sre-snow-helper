@@ -1,38 +1,79 @@
 // SRE Helper — YAML parsing + validation contract.
 //
-// Shared by the options page and the future side-panel execution UI.
+// Shared by the options page and the side-panel execution UI.
 // Storage layout (chrome.storage.local):
-//   sreConfig:     { displayName, refreshInterval, enableNotifications, theme, apiEndpoint }
-//   sreComponents: Array<{ id, yaml, collapsed }>  — reusable step components (was sreCommons)
-//   srePlaybooks:  Array<{ id, yaml, collapsed }>  — orchestration flows
-//   sreForms:      Array<{ name, label, value, display, type }>
+//   sreCommonSteps: { id, yaml }                 — single shared "Common Steps" document
+//   srePlaybooks:   Array<{ id, yaml, collapsed }>  — orchestration flows
+//   sreForms:       Array<{ name, label, value, display, type }>
+//   sreServices:    { id, yaml }                 — single shared "Services" document
+//
+// Services YAML shape (single doc):
+//   services:            top-level list. Each entry is either an API call or a
+//                        group (type: group, with its own nested `services:`).
+//     - name: ...
+//       method: POST          (GET when omitted)
+//       endpoint: https://... (may embed ${var})
+//       desc: ...
+//       header: { k: v }      (values may embed ${var})
+//       body: map or list     (keys/values may embed ${var})
+//       output:
+//         - alias: myName     (alias + json_path expose values to LATER APIs in
+//           json_path: $.a.b  the same group; single APIs' outputs are unused)
+// Variable rule: everything is written ${name}. A ${name} that equals an
+// `output.alias` of an EARLIER service in the same group resolves from the
+// chain automatically (no UI input); every other ${name} is prompted as a
+// user input at run time.
 //
 // YAML shapes:
-//   component:  name, desc, form          (form is a map of field names -> values)
-//   playbook:   name, desc, steps[]
-//     step:     { ref: "<component name>" }  OR  { name, desc, form? }
+//   common doc:  params[]  + common_steps:  (map of step key -> { action?, form? })
+//   playbook:    name, desc, params[]?, flow:
+//     flow item: { name?, ref? }  (ref: key into common_steps)
+//                { name?, desc?, form?, action? }  (inline step)
 //
 // Form schema (from sreForms rows):
-//   name    : unique identifier for the field; must match keys in a YAML `form:` block
-//   label   : human-friendly label
-//   value   : reference/target value — required if type != "string"
-//   display : rendering hint (opaque)
-//   type    : one of  "string" | "number" | "reference"
+//   name    : field identifier; must match keys in a YAML `form:` block.
+//             NOT required to be unique — repeating a name groups rows into
+//             candidate values for the same field (an enum/select).
+//   label   : human-friendly label (what `/` hints show for the field name)
+//   display : human-readable text shown by `/` value hints (falls back to value)
+//   value   : candidate value for this row — the actual text inserted by the
+//             hint. A field whose rows are all type "string" is free-form
+//             (typed directly, no value hints); if any row is "number"/"sysid",
+//             the YAML value must equal one of those rows' values.
+//   type    : one of  "string" | "number" | "sysid"
 //
-// Validation rules:
-//   * A YAML `form:` block's keys MUST exist in sreForms (matched by `name`).
-//   * For any sreForms row where type !== "string", the matching YAML value
-//     MUST equal the row's `value` field; otherwise validation fails.
-//   * For type === "string", any value is accepted.
+// Param scope rule (2.3):
+//   * Placeholders inside a common step's form resolve against the common doc's
+//     own top-level `params:`.
+//   * Placeholders inside an inline flow step's form resolve against the
+//     playbook's own `params:`.
 //
-// Autocomplete helpers accept the text around the caret and return candidate
-// suggestions (display name + insertion snippet) based on known component refs
-// and form field entries.
+// `action` semantics (2.4):
+//   * May be declared on a flow item or inside a common step body.
+//   * Effective value = flow item's action when present, else the referenced
+//     common step's action, else false.
+//   * On execution: action=true steps send individually in flow order; the rest
+//     are merged into one final send.
+//
+// Autocomplete (2.5):
+//   * After `ref: ` only the common step keys are suggested.
+//   * `/` slash completions are two-level:
+//     - line has no `key: ` yet  => every distinct form `name` (deduped); each
+//       candidate is shown by its human `label` and inserts `name: `;
+//     - caret sits right after a `key: ` matching a form name => that name's
+//       candidate `value`s (rows sharing the name); each candidate is shown by
+//       its human-readable `display` (falling back to the value) and inserts
+//       the `value`. Only offered when the field is NOT free-form: a field
+//       whose rows are all type "string" accepts any text, so its value stage
+//       suggests nothing.
 
 (function (global) {
   "use strict";
 
-  const ALLOWED_FORM_TYPES = ["string", "number", "reference"];
+  const ALLOWED_FORM_TYPES = ["string", "number", "sysid"];
+
+  const TRUE_TOKENS = new Set(["true", "yes", "on", "1"]);
+  const FALSE_TOKENS = new Set(["false", "no", "off", "0", "", "null", "~"]);
 
   function stripQuotes(v) {
     const t = String(v).trim();
@@ -59,19 +100,28 @@
     return result;
   }
 
-  function parseRefs(yaml) {
-    const refs = [];
-    if (!yaml) return refs;
-    const re = /^[ \t]*-[ \t]*ref:[ \t]*(.+?)[ \t]*$/gm;
-    let m;
-    while ((m = re.exec(yaml)) !== null) refs.push(stripQuotes(m[1]));
-    return refs;
+  /* ---------- Action token parsing ---------- */
+
+  // YAML-ish boolean coercion for `action:`. Returns undefined when the key is
+  // absent or holds an unrecognized token (so callers can fall back).
+  function parseActionToken(v) {
+    if (typeof v === "boolean") return v;
+    const s = String(v).trim().toLowerCase();
+    if (TRUE_TOKENS.has(s)) return true;
+    if (FALSE_TOKENS.has(s)) return false;
+    return undefined;
+  }
+
+  // Merge a flow-item action with a referenced common step's action.
+  function effectiveAction(flowItemAction, commonStepAction) {
+    if (flowItemAction !== undefined) return flowItemAction;
+    if (commonStepAction !== undefined) return commonStepAction;
+    return false;
   }
 
   /* ---------- YAML block parsing ---------- */
 
   // Parse `form:` block of a single step into { field: value }.
-  // The form block lives under the component/playbook-step level.
   // `indentLevel` is a hint for the expected indentation of the `form:` header;
   // 0 = top-level, 2 = inside a step. Leading whitespace is tolerated.
   // Returns {} when no form block.
@@ -103,91 +153,21 @@
     return form;
   }
 
-  // Parse every step in a playbook's `steps:` block.
-  // Each step is normalized to { ref? | name, desc, form }.
-  function parseSteps(playbookYaml) {
-    const steps = [];
-    if (!playbookYaml) return steps;
-    const startMatch = playbookYaml.match(/^steps:[ \t]*$/m);
-    if (!startMatch) return steps;
-    let i = startMatch.index + startMatch[0].length;
-    if (playbookYaml[i] === "\n") i++;
-    else if (playbookYaml[i] === "\r" && playbookYaml[i + 1] === "\n") i += 2;
-    const tail = playbookYaml.slice(i);
-    // Each list item starts with "  - " (2 spaces, dash, space). A new step begins
-    // whenever we see a line matching "  - <key>:". We split the tail into step
-    // fragments, then parse each.
-    const lines = tail.split(/\r?\n/);
-    let buf = [];
-    // Detect step-start lines: any indented "- <key>:" (1+ spaces indent).
-    // Tolerates 1-4 space indentation.
-    const stepStartRe = /^(\s+)-\s+(?:ref|name|desc|form|steps):/;
-    const pushStep = () => {
-      if (buf.length === 0) return;
-      const blob = buf.join("\n");
-      // Detect ref step: first key line should be "- ref: <name>"
-      const refMatch = blob.match(/^[ \t]*-[ \t]*ref:[ \t]*(.+?)[ \t]*$/m);
-      if (refMatch) {
-        // Ref step may carry its own form block — parse it so callers can
-        // decide whether to use the ref step's form or the component's.
-        const form = parseFormBlock(blob, 0);
-        steps.push({ ref: stripQuotes(refMatch[1]), form });
-      } else {
-        // Inline step: extract name, desc, form from the fragment.
-        // Strip the "- " prefix from the first line, then compute the minimum
-        // indent across remaining lines and remove it so the top-level fields
-        // (name/desc/form) align at col 0 while form children keep their
-        // relative indentation.
-        const stepLines = buf.map((ln) =>
-          /^(\s*)-\s/.test(ln) ? ln.replace(/^(\s*)-\s/, "$1") : ln
-        );
-        // Find min indent (ignore blank lines).
-        let minIndent = Infinity;
-        for (const ln of stepLines) {
-          if (ln.trim() === "") continue;
-          const m = ln.match(/^(\s*)/);
-          const ind = m ? m[1].length : 0;
-          if (ind < minIndent) minIndent = ind;
-        }
-        if (!isFinite(minIndent)) minIndent = 0;
-        const denuded = stepLines
-          .map((ln) => (ln.trim() === "" ? ln : ln.slice(minIndent)))
-          .join("\n");
-        const h = parseHeader(denuded);
-        const form = parseFormBlock(denuded, 0);
-        steps.push({ name: h.name, desc: h.desc, form });
-      }
-    };
-    for (const line of lines) {
-      if (stepStartRe.test(line)) {
-        pushStep();
-        buf = [line];
-      } else if (buf.length > 0) {
-        // Continuation of current step (must be indented).
-        buf.push(line);
-      }
-    }
-    pushStep();
-    return steps;
-  }
-
-  /* ---------- Params + placeholder resolution ---------- */
-
-  // Parse a playbook's `params:` block.
-  // Each entry: { name }. Params are referenced by index: ${param0}, ${param1}, ...
-  //   params:
-  //     - name: User Name
-  //     - name: Alert ID
+  // Parse a `params:` block from the top of a document (common doc or playbook).
+  // Each entry: { name, type? } — `type` only steers front-end rendering:
+  //   type: textarea => a multi-line <textarea>; anything else (or omitted)
+  //   => a single-line <input type="text">. Params are referenced by index:
+  //   ${param0}, ${param1}, ...
   // Returns [] when no params block.
-  function parseParams(playbookYaml) {
+  function parseParams(yaml) {
     const params = [];
-    if (!playbookYaml) return params;
-    const startMatch = playbookYaml.match(/^params:[ \t]*$/m);
+    if (!yaml) return params;
+    const startMatch = yaml.match(/^params:[ \t]*$/m);
     if (!startMatch) return params;
     let i = startMatch.index + startMatch[0].length;
-    if (playbookYaml[i] === "\n") i++;
-    else if (playbookYaml[i] === "\r" && playbookYaml[i + 1] === "\n") i += 2;
-    const tail = playbookYaml.slice(i);
+    if (yaml[i] === "\n") i++;
+    else if (yaml[i] === "\r" && yaml[i + 1] === "\n") i += 2;
+    const tail = yaml.slice(i);
     const lines = tail.split(/\r?\n/);
     let cur = null;
     for (const line of lines) {
@@ -210,13 +190,186 @@
         cur = null;
         break;
       }
-      // name: value — on the "- name:" line.
+      // Sub-keys of the current entry: `name:` (also on the "- name:" line)
+      // and the optional `type:` widget hint.
       const nm = line.match(/^\s*-?\s*name:[ \t]*(.+?)[ \t]*$/);
       if (nm) cur.name = stripQuotes(nm[1]);
+      const ty = line.match(/^\s*type:[ \t]*(.+?)[ \t]*$/);
+      if (ty) cur.type = stripQuotes(ty[1]).toLowerCase();
     }
     if (cur) params.push(cur);
     return params.filter((p) => p.name);
   }
+
+  /* ---------- Common steps (single doc) ---------- */
+
+  // Parse the shared Common Steps document:
+  //   params:
+  //     - name: User Name
+  //   common_steps:
+  //     ack:
+  //       action: true
+  //       form:
+  //         note: ack ${param0}
+  // Returns { params: [...], steps: { key: { action?, form } } }.
+  function parseCommonSteps(commonYaml) {
+    const params = parseParams(commonYaml);
+    const steps = {};
+    if (!commonYaml) return { params, steps };
+    const startMatch = commonYaml.match(/^common_steps:[ \t]*(?:#.*)?$/m);
+    if (!startMatch) return { params, steps };
+    const headerIndent = (startMatch[0].match(/^[ \t]*/) || [""])[0].length;
+    let i = startMatch.index + startMatch[0].length;
+    if (commonYaml[i] === "\n") i++;
+    else if (commonYaml[i] === "\r" && commonYaml[i + 1] === "\n") i += 2;
+    const lines = commonYaml.slice(i).split(/\r?\n/);
+    // A map entry is a line indented deeper than the header ending in ":",
+    // e.g. "  ack:". Its body is everything up to the next entry at the same
+    // indent (or a col-0 key, which ends the block).
+    let curKey = null;
+    let buf = [];
+    const flush = () => {
+      if (curKey === null) return;
+      const slice = buf.join("\n");
+      const entry = {};
+      const act = slice.match(/^[ \t]*action:[ \t]*(.+?)[ \t]*$/m);
+      if (act) {
+        const a = parseActionToken(act[1]);
+        if (a !== undefined) entry.action = a;
+      }
+      entry.form = parseFormBlock(slice, headerIndent);
+      steps[curKey] = entry;
+      buf = [];
+      curKey = null;
+    };
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) {
+        if (curKey !== null) buf.push(line);
+        continue;
+      }
+      if (!line.startsWith(" ")) {
+        // A col-0 key means the common_steps block is over.
+        flush();
+        break;
+      }
+      // Entry boundary: indented, non-"list-dash", ends with a bare ":".
+      const entryMatch = line.match(/^([ \t]+)([\w-]+):[ \t]*(?:#.*)?$/);
+      if (entryMatch) {
+        const indent = entryMatch[1].length;
+        if (indent > headerIndent) {
+          if (curKey === null) {
+            curKey = entryMatch[2];
+            buf = [line];
+            continue;
+          }
+          // Same indent as the current entry => new sibling entry.
+          const curIndentMatch = buf[0].match(/^([ \t]+)/);
+          const curIndent = curIndentMatch ? curIndentMatch[1].length : 0;
+          if (indent === curIndent) {
+            flush();
+            curKey = entryMatch[2];
+            buf = [line];
+            continue;
+          }
+        }
+      }
+      if (curKey !== null) buf.push(line);
+    }
+    flush();
+    return { params, steps };
+  }
+
+  // Convenience: index the common doc into a Map key -> { action?, form }.
+  function indexCommonSteps(commonYaml) {
+    const { steps } = parseCommonSteps(commonYaml || "");
+    return new Map(Object.entries(steps));
+  }
+
+  /* ---------- Playbook flow ---------- */
+
+  // Parse a playbook's `flow:` list. Each item keeps its own declared fields
+  // (name / desc / ref / form / action); effective resolution happens later.
+  function parseFlow(playbookYaml) {
+    const flow = [];
+    if (!playbookYaml) return flow;
+    const startMatch = playbookYaml.match(/^flow:[ \t]*(?:#.*)?$/m);
+    if (!startMatch) return flow;
+    let i = startMatch.index + startMatch[0].length;
+    if (playbookYaml[i] === "\n") i++;
+    else if (playbookYaml[i] === "\r" && playbookYaml[i + 1] === "\n") i += 2;
+    const lines = playbookYaml.slice(i).split(/\r?\n/);
+    let buf = [];
+    let itemIndent = null; // indentation of the flow list's dash items
+    const flush = () => {
+      if (buf.length === 0) return;
+      flow.push(parseFlowItem(buf));
+      buf = [];
+    };
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) {
+        if (buf.length) buf.push(line);
+        continue;
+      }
+      // A col-0 key means the flow list is over.
+      if (!line.startsWith(" ")) {
+        flush();
+        break;
+      }
+      // A new item starts with a dash at the flow list's item indent. Lines at
+      // a deeper indent (form children etc.) belong to the current item.
+      const dashMatch = line.match(/^([ \t]+)-\s+/);
+      if (dashMatch) {
+        const indent = dashMatch[1].length;
+        if (itemIndent === null) itemIndent = indent;
+        if (indent === itemIndent) {
+          flush();
+          buf = [line];
+          continue;
+        }
+      }
+      if (buf.length) buf.push(line);
+    }
+    flush();
+    return flow;
+  }
+
+  // Normalize a raw `- ` item fragment into { name?, desc?, ref?, action?, form? }.
+  function parseFlowItem(buf) {
+    const stepLines = buf.map((ln) =>
+      /^(\s*)-\s/.test(ln) ? ln.replace(/^(\s*)-\s/, "$1") : ln
+    );
+    let minIndent = Infinity;
+    for (const ln of stepLines) {
+      if (ln.trim() === "") continue;
+      const m = ln.match(/^(\s*)/);
+      const ind = m ? m[1].length : 0;
+      if (ind < minIndent) minIndent = ind;
+    }
+    if (!isFinite(minIndent)) minIndent = 0;
+    const denuded = stepLines
+      .map((ln) => (ln.trim() === "" ? ln : ln.slice(minIndent)))
+      .join("\n");
+    const item = {};
+    const h = parseHeader(denuded);
+    if (h.name) item.name = h.name;
+    if (h.desc) item.desc = h.desc;
+    // Field lines keep some residual indentation after de-denting — match them
+    // at any indent level.
+    const refMatch = denuded.match(/^[ \t]*ref:[ \t]*(.+?)[ \t]*$/m);
+    if (refMatch) item.ref = stripQuotes(refMatch[1]);
+    const actMatch = denuded.match(/^[ \t]*action:[ \t]*(.+?)[ \t]*$/m);
+    if (actMatch) {
+      const a = parseActionToken(actMatch[1]);
+      if (a !== undefined) item.action = a;
+    }
+    const form = parseFormBlock(denuded, 0);
+    if (Object.keys(form).length > 0) item.form = form;
+    return item;
+  }
+
+  /* ---------- Placeholders ---------- */
 
   // Extract all ${placeholder} names from an arbitrary string.
   // Returns an array of unique names (without ${}).
@@ -246,98 +399,101 @@
     });
   }
 
-  // Resolve placeholders across an entire playbook YAML string and re-parse
-  // its steps so each step's final form (HTTP body) is materialised.
-  // Returns: { yaml, steps } where steps is the output of parseSteps on the
-  // resolved YAML.
-  function resolvePlaybook(playbookYaml, values) {
-    const resolved = resolvePlaceholders(playbookYaml || "", values || {});
-    return { yaml: resolved, steps: parseSteps(resolved) };
-  }
-
   /* ---------- Validation ---------- */
 
-  // Collect component name -> component index map.
-  function indexComponents(components) {
-    const byName = new Map();
-    (components || []).forEach((c, idx) => {
-      const { name } = parseHeader(c.yaml || "");
-      if (name) byName.set(name, c);
-    });
-    return byName;
-  }
-
-  // Build form definition map: formDef.name -> row.
+  // Build a form-definition index: form name -> array of rows.
+  // A name may appear on many rows — together they describe the candidate
+  // values available for one YAML field.
   function indexForms(forms) {
     const byName = new Map();
     (forms || []).forEach((row) => {
-      if (row && row.name) byName.set(row.name, row);
+      if (row && row.name) {
+        if (!byName.has(row.name)) byName.set(row.name, []);
+        byName.get(row.name).push(row);
+      }
     });
     return byName;
   }
 
   // Validate a single form map ({field: value}) against the form definitions.
+  // A field whose rows are all type "string" accepts any YAML value; as soon
+  // as any row is typed "number"/"sysid", the YAML value must equal one of
+  // those rows' values.
   // Returns { ok, errors: string[] }
   function validateForm(formMap, formsByName) {
     const errors = [];
     for (const [key, val] of Object.entries(formMap)) {
-      const def = formsByName.get(key);
-      if (!def) {
+      const defs = formsByName.get(key);
+      if (!defs || defs.length === 0) {
         errors.push(`form key "${key}" is not defined in the Form library`);
         continue;
       }
-      if (def.type !== "string") {
-        // Non-string types require the YAML value to equal the definition value.
-        if (String(val) !== String(def.value ?? "")) {
-          errors.push(
-            `form key "${key}" (type ${def.type}) requires value "${def.value ?? ""}", got "${val}"`
-          );
-        }
+      const fixedValues = defs
+        .filter((d) => d.type && d.type !== "string")
+        .map((d) => String(d.value ?? ""));
+      if (fixedValues.length > 0 && fixedValues.indexOf(String(val)) === -1) {
+        errors.push(
+          `form key "${key}" must be one of ${fixedValues
+            .map((x) => `"${x}"`)
+            .join(", ")}, got "${val}"`
+        );
       }
     }
     return { ok: errors.length === 0, errors };
   }
 
-  // Validate a component's YAML.
-  function validateComponent(yaml, formsByName) {
+  // Validate the shared Common Steps document.
+  // Returns { ok, errors, warnings }
+  function validateCommonStepsDoc(commonYaml, formsByName) {
     const errors = [];
-    const { name } = parseHeader(yaml);
-    if (!name) errors.push("missing top-level `name:`");
-    const form = parseFormBlock(yaml, 0);
-    const fv = validateForm(form, formsByName);
-    if (!fv.ok) errors.push(...fv.errors);
-    return { ok: errors.length === 0, errors };
+    const warnings = [];
+    const { steps } = parseCommonSteps(commonYaml || "");
+    const keys = Object.keys(steps);
+    if (keys.length === 0) {
+      warnings.push("no `common_steps:` block, or the map is empty");
+    }
+    keys.forEach((key) => {
+      const step = steps[key];
+      const fv = validateForm(step.form || {}, formsByName);
+      if (!fv.ok) {
+        errors.push(
+          ...fv.errors.map((e) => `common step "${key}": ${e}`)
+        );
+      }
+    });
+    return { ok: errors.length === 0, errors, warnings };
   }
 
-  // Validate a playbook's YAML against components and form definitions.
+  // Validate a playbook's YAML against the Common Steps map and form library.
   // Returns { ok, errors, warnings }
-  function validatePlaybook(yaml, componentsByName, formsByName) {
+  function validatePlaybookFlow(yaml, commonByName, formsByName) {
     const errors = [];
     const warnings = [];
     const { name } = parseHeader(yaml);
     if (!name) errors.push("missing top-level `name:`");
-    const steps = parseSteps(yaml);
-    if (steps.length === 0) warnings.push("no `steps:` block or steps list is empty");
-    steps.forEach((step, idx) => {
-      const prefix = `step ${idx + 1}`;
-      if (step.ref) {
-        if (!componentsByName.has(step.ref)) {
-          errors.push(`${prefix}: ref "${step.ref}" not found in Components`);
+    const flow = parseFlow(yaml);
+    if (flow.length === 0) warnings.push("no `flow:` block, or the flow is empty");
+    flow.forEach((item, idx) => {
+      const prefix = `flow step ${idx + 1}`;
+      if (item.ref) {
+        if (!commonByName.has(item.ref)) {
+          errors.push(
+            `${prefix}: ref "${item.ref}" not found in Common Steps`
+          );
           return;
         }
-        const comp = componentsByName.get(step.ref);
-        const compForm = parseFormBlock(comp.yaml || "", 0);
-        const fv = validateForm(compForm, formsByName);
-        if (!fv.ok) {
-          errors.push(
-            ...fv.errors.map((e) => `${prefix} (ref "${step.ref}"): ${e}`)
-          );
+        // A ref item may override with its own form — validate it too.
+        if (item.form && Object.keys(item.form).length) {
+          const fv = validateForm(item.form, formsByName);
+          if (!fv.ok) {
+            errors.push(...fv.errors.map((e) => `${prefix}: ${e}`));
+          }
         }
       } else {
-        if (!step.name) {
+        if (!item.name) {
           errors.push(`${prefix}: missing \`name:\``);
         }
-        const fv = validateForm(step.form || {}, formsByName);
+        const fv = validateForm(item.form || {}, formsByName);
         if (!fv.ok) {
           errors.push(...fv.errors.map((e) => `${prefix}: ${e}`));
         }
@@ -346,64 +502,555 @@
     return { ok: errors.length === 0, errors, warnings };
   }
 
+  /* ---------- Services (single shared API doc) ---------- */
+
+  // Strip a trailing `# comment` from a YAML line, honoring quotes.
+  function stripYamlComment(text) {
+    let quote = null;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === quote && (i === 0 || text[i - 1] !== "\\")) quote = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === "#" && (i === 0 || /\s/.test(text[i - 1]))) {
+        return text.slice(0, i).trimEnd();
+      }
+    }
+    return text.trimEnd();
+  }
+
+  // Parse `key: rest` at the head of a line. Keys are plain tokens (may contain
+  // "-"/"_"). Returns null when the line is not a mapping entry.
+  function parseKVLine(text) {
+    const ci = text.indexOf(":");
+    if (ci <= 0) return null;
+    const key = text.slice(0, ci).trim();
+    if (!/^[A-Za-z_][\w-]*$/.test(key)) return null;
+    return { key, rest: text.slice(ci + 1).trim(), hasValue: text.slice(ci + 1).trim().length > 0 };
+  }
+
+  function isDashText(t) {
+    return t === "-" || /^-\s/.test(t);
+  }
+
+  // Coerce an inline scalar. Strings containing ${...} are kept verbatim.
+  function coerceScalar(raw) {
+    let s = String(raw).trim();
+    if (s === "") return null;
+    if (
+      s.length >= 2 &&
+      ((s[0] === '"' && s[s.length - 1] === '"') ||
+        (s[0] === "'" && s[s.length - 1] === "'"))
+    ) {
+      return s.slice(1, -1);
+    }
+    if (s.indexOf("${") !== -1) return s;
+    const low = s.toLowerCase();
+    if (TRUE_TOKENS.has(low)) return true;
+    if (FALSE_TOKENS.has(low)) return false;
+    if (/^[-+]?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(s)) {
+      if (/^[-+]?0\d+/.test(s)) return s; // keep leading-zero ids as strings
+      const n = Number(s);
+      if (!Number.isNaN(n)) return n;
+    }
+    return s;
+  }
+
+  // Minimal indentation-based YAML reader that returns plain JS data
+  // (objects / arrays / scalars). Supports nested maps & sequences; no flow
+  // style, no block scalars, no tabs.
+  function readYamlNode(toks, i, indent) {
+    if (i >= toks.length) return { node: null, i };
+    const t = toks[i];
+    if (t.indent !== indent) return { node: null, i };
+    if (isDashText(t.text)) return readYamlSequence(toks, i, indent);
+    return readYamlMapping(toks, i, indent);
+  }
+
+  function readYamlMapping(toks, i, indent) {
+    const map = {};
+    while (i < toks.length) {
+      const t = toks[i];
+      if (t.indent !== indent || isDashText(t.text)) break;
+      const kv = parseKVLine(t.text);
+      if (!kv) {
+        i++;
+        continue;
+      }
+      const key = kv.key;
+      let value;
+      if (kv.hasValue) {
+        value = coerceScalar(kv.rest);
+        i++;
+      } else {
+        const nxt = toks[i + 1];
+        if (nxt && nxt.indent > indent) {
+          const r = readYamlNode(toks, i + 1, nxt.indent);
+          value = r.node;
+          i = r.i;
+        } else {
+          value = null;
+          i++;
+        }
+      }
+      map[key] = value;
+    }
+    return { node: map, i };
+  }
+
+  function readYamlSequence(toks, i, indent) {
+    const arr = [];
+    while (i < toks.length) {
+      const t = toks[i];
+      if (t.indent !== indent || !isDashText(t.text)) break;
+      const dashLen = /^-\s/.test(t.text) ? 2 : 1;
+      const content = t.text.slice(dashLen).trim();
+      const kv = content ? parseKVLine(content) : null;
+      if (kv) {
+        const item = {};
+        let j = i + 1;
+        let value;
+        if (kv.hasValue) {
+          value = coerceScalar(kv.rest);
+        } else {
+          const nxt = toks[j];
+          if (nxt && nxt.indent > indent) {
+            const r = readYamlNode(toks, j, nxt.indent);
+            value = r.node;
+            j = r.i;
+          } else value = null;
+        }
+        item[kv.key] = value;
+        // Remaining deeper key lines belong to the same list item's map.
+        while (
+          j < toks.length &&
+          toks[j].indent > indent &&
+          !isDashText(toks[j].text)
+        ) {
+          const t2 = toks[j];
+          const kv2 = parseKVLine(t2.text);
+          if (!kv2) {
+            j++;
+            continue;
+          }
+          let v2;
+          if (kv2.hasValue) {
+            v2 = coerceScalar(kv2.rest);
+            j++;
+          } else {
+            const nn = toks[j + 1];
+            if (nn && nn.indent > t2.indent) {
+              const rr = readYamlNode(toks, j + 1, nn.indent);
+              v2 = rr.node;
+              j = rr.i;
+            } else {
+              v2 = null;
+              j++;
+            }
+          }
+          item[kv2.key] = v2;
+        }
+        arr.push(item);
+        i = j;
+      } else {
+        arr.push(content === "" ? null : coerceScalar(content));
+        i++;
+      }
+    }
+    return { node: arr, i };
+  }
+
+  // Parse an arbitrary YAML string into plain JS data (or null when empty).
+  function parseNestedYaml(yamlText) {
+    const toks = [];
+    const rawLines = String(yamlText || "").replace(/\r\n/g, "\n").split("\n");
+    for (const rawLine of rawLines) {
+      if (/^\s*$/.test(rawLine)) continue;
+      const indent = (rawLine.match(/^[ \t]*/) || [""])[0].length;
+      const text = stripYamlComment(rawLine.trim());
+      if (!text) continue;
+      toks.push({ indent, text });
+    }
+    if (toks.length === 0) return null;
+    const r = readYamlNode(toks, 0, toks[0].indent);
+    return r ? r.node : null;
+  }
+
+  // Derive an output alias from a JSONPath when the doc does not spell one out.
+  function aliasFromPath(path) {
+    const m = String(path).match(/\.([A-Za-z_$][\w$-]*)\s*$/);
+    return m ? m[1] : String(path);
+  }
+
+  // Normalize `output:` (list of {alias,json_path} | alias->path map | a single
+  // JSONPath string) into [{ alias, path }].
+  function normalizeServiceOutputs(rawOut) {
+    const list = [];
+    if (rawOut == null) return list;
+    if (Array.isArray(rawOut)) {
+      rawOut.forEach((e) => {
+        if (e == null) return;
+        if (typeof e === "string") {
+          if (e.trim()) list.push({ alias: aliasFromPath(e), path: e.trim() });
+        } else if (typeof e === "object") {
+          const alias = e.alias != null ? String(e.alias).trim() : "";
+          const path =
+            e.json_path != null
+              ? String(e.json_path).trim()
+              : e.path != null
+                ? String(e.path).trim()
+                : "";
+          if (alias && path) list.push({ alias, path });
+          else if (path) list.push({ alias: aliasFromPath(path), path });
+        }
+      });
+    } else if (typeof rawOut === "object") {
+      for (const [k, v] of Object.entries(rawOut)) {
+        if (v != null) list.push({ alias: String(k).trim(), path: String(v).trim() });
+      }
+    } else if (typeof rawOut === "string" && rawOut.trim()) {
+      list.push({ alias: aliasFromPath(rawOut), path: rawOut.trim() });
+    }
+    return list;
+  }
+
+  // Normalize one parsed service entry (raw object from parseNestedYaml).
+  // type: "api" | "group". A group may carry name/desc + nested services[].
+  function normalizeServiceEntry(raw, label) {
+    const isGroup =
+      raw &&
+      (raw.services !== undefined ||
+        String(raw.type || "").toLowerCase() === "group");
+    if (isGroup) {
+      const children = Array.isArray(raw.services)
+        ? raw.services.map((c, idx) =>
+            normalizeServiceEntry(c, `${label} → service ${idx + 1}`)
+          )
+        : [];
+      return {
+        name: raw.name != null ? stripQuotes(String(raw.name)) : "",
+        type: "group",
+        desc: raw.desc != null ? String(raw.desc) : "",
+        services: children,
+      };
+    }
+    const out = {
+      name: raw && raw.name != null ? stripQuotes(String(raw.name)) : "",
+      type: "api",
+      desc: raw && raw.desc != null ? String(raw.desc) : "",
+      method: raw && raw.method != null ? String(raw.method).trim().toUpperCase() : "GET",
+      endpoint: raw && raw.endpoint != null ? stripQuotes(String(raw.endpoint)) : "",
+      header: raw && raw.header != null ? raw.header : null,
+      body: raw && raw.body !== undefined ? raw.body : null,
+      outputs: normalizeServiceOutputs(raw && raw.output),
+    };
+    return out;
+  }
+
+  // Parse the shared Services document.
+  // Returns { services: [...], rawErrors: string[] }.
+  function parseServicesDoc(yaml) {
+    const rawErrors = [];
+    let data;
+    try {
+      data = parseNestedYaml(yaml || "");
+    } catch (e) {
+      return { services: [], rawErrors: [`unparseable YAML: ${e.message}`] };
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return { services: [], rawErrors: ["missing top-level `services:` list"] };
+    }
+    const list = data.services;
+    if (!Array.isArray(list)) {
+      return { services: [], rawErrors: ["missing top-level `services:` list"] };
+    }
+    const services = list.map((item, idx) =>
+      normalizeServiceEntry(item, `services[${idx + 1}]`)
+    );
+    return { services, rawErrors };
+  }
+
+  function validateServicesDoc(yaml) {
+    const errors = [];
+    const warnings = [];
+    const doc = parseServicesDoc(yaml || "");
+    errors.push(...doc.rawErrors);
+
+    const visit = (svc, prefix, depth) => {
+      const where = svc.name ? `${prefix} "${svc.name}"` : prefix;
+      if (!svc.name) errors.push(`${prefix}: missing name:`);
+      if (svc.type === "group") {
+        if (!svc.services || svc.services.length === 0) {
+          warnings.push(`${where}: group has no services`);
+        }
+        (svc.services || []).forEach((child, idx) => {
+          visit(child, `${prefix} → service ${idx + 1}`, depth + 1);
+          if (child.type === "group") {
+            errors.push(
+              `${prefix} → service ${idx + 1}: nested groups are not supported`
+            );
+          }
+        });
+        return;
+      }
+      if (!svc.endpoint) {
+        errors.push(`${where}: missing endpoint`);
+      } else if (!/^https?:\/\//i.test(svc.endpoint)) {
+        warnings.push(`${where}: endpoint is not an http(s) URL`);
+      }
+      if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(svc.method)) {
+        errors.push(`${where}: unsupported method "${svc.method}"`);
+      }
+      // output aliases must be unique within this service
+      const seen = new Set();
+      (svc.outputs || []).forEach((o) => {
+        if (seen.has(o.alias)) {
+          errors.push(`${where}: duplicate output alias "${o.alias}"`);
+        }
+        seen.add(o.alias);
+      });
+    };
+
+    doc.services.forEach((s, idx) => visit(s, `services[${idx + 1}]`, 1));
+
+    // Duplicate top-level names are confusing in the side panel.
+    const nameSeen = new Set();
+    doc.services.forEach((s) => {
+      if (!s.name) return;
+      if (nameSeen.has(s.name)) {
+        warnings.push(`top-level name "${s.name}" is duplicated`);
+      }
+      nameSeen.add(s.name);
+    });
+
+    return {
+      ok: errors.length === 0,
+      errors,
+      warnings,
+      doc: doc.services,
+    };
+  }
+
+  /* ---------- Services: placeholders, alias chain, path lookup ---------- */
+
+  // Recursively collect ${name}s from scalars (and mapping keys) in `value`.
+  function collectRefs(value, out) {
+    if (typeof value === "string") {
+      extractPlaceholderNames(value).forEach((n) => out.add(n));
+    } else if (Array.isArray(value)) {
+      value.forEach((v) => collectRefs(v, out));
+    } else if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) {
+        extractPlaceholderNames(String(k)).forEach((n) => out.add(n));
+        collectRefs(v, out);
+      }
+    }
+  }
+
+  function serviceRefNames(svc) {
+    const set = new Set();
+    collectRefs(svc.endpoint, set);
+    collectRefs(svc.header, set);
+    collectRefs(svc.body, set);
+    return set;
+  }
+
+  // Compute the user inputs a runnable unit (top-level API or whole group) needs.
+  // A ${name} that equals an output alias of an EARLIER sibling inside the same
+  // group is satisfied by the chain and is NOT returned here.
+  // Returns [{ var, from }] — unique var names in first-use order.
+  function collectServiceInputs(topItem) {
+    const inputs = [];
+    const seen = new Set();
+    const want = (n, from) => {
+      if (seen.has(n)) return;
+      seen.add(n);
+      inputs.push({ var: n, from });
+    };
+    const walk = (svc, knownAliases, prefix) => {
+      const from = `${prefix} ${svc.name || "service"}`.trim();
+      const refs = serviceRefNames(svc);
+      refs.forEach((n) => {
+        if (!knownAliases.has(n)) want(n, from);
+      });
+      // outputs become visible to later siblings in the same group
+      (svc.outputs || []).forEach((o) => knownAliases.add(o.alias));
+    };
+    if (topItem && topItem.type === "group") {
+      const known = new Set();
+      (topItem.services || []).forEach((child, idx) =>
+        walk(child, known, `${topItem.name || "Group"} · ${idx + 1}`)
+      );
+    } else if (topItem) {
+      walk(topItem, new Set(), "Service");
+    }
+    return inputs;
+  }
+
+  // Deep-replace ${name} placeholders in an arbitrary template value.
+  // Unknown placeholders are left untouched.
+  function resolveTemplate(value, values) {
+    if (typeof value === "string") return resolvePlaceholders(value, values);
+    if (Array.isArray(value)) return value.map((v) => resolveTemplate(v, values));
+    if (value && typeof value === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) {
+        out[resolvePlaceholders(String(k), values)] = resolveTemplate(v, values);
+      }
+      return out;
+    }
+    return value;
+  }
+
+  // Minimal JSONPath evaluator over parsed JSON: $.a.b[0].c, $.a['x-y'] ...
+  // Returns undefined when any segment is missing.
+  function queryPath(obj, path) {
+    if (path == null) return undefined;
+    let p = String(path).trim();
+    if (!p) return undefined;
+    if (p === "$") return obj;
+    if (p[0] === "$") p = p.slice(1);
+    const segs = [];
+    const re = /\.([A-Za-z_$][\w$-]*)|\[(\d+)\]|\[['"]([^'"]+)['"]\]/g;
+    let m;
+    while ((m = re.exec(p)) !== null) {
+      segs.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? Number(m[2]) : m[3]);
+    }
+    if (segs.length === 0) {
+      // bare key like "data.id" (no leading dot) — try whole-key match
+      const parts = p.split(".").filter(Boolean);
+      if (parts.length) segs.push(...parts);
+    }
+    let cur = obj;
+    for (const s of segs) {
+      if (cur == null) return undefined;
+      cur = cur[s];
+    }
+    return cur;
+  }
+
   /* ---------- Autocomplete helpers ---------- */
 
-  // Build the list of autocomplete items from the current libraries.
+  // Build autocomplete candidates for the given context.
+  // ctx.kind === "ref"  => only common step keys (after "ref: ").
+  // ctx.kind === "slash" => two-level form completions (see below).
   // Each item is { label, snippet, group, hint }.
   function buildCompletions(ctx) {
     const items = [];
-    // 1. Component refs => "- ref: <name>" snippets (used inside playbook steps)
-    (ctx.components || []).forEach((c) => {
-      const { name, desc } = parseHeader(c.yaml || "");
-      if (!name) return;
-      items.push({
-        label: `ref: ${name}`,
-        snippet: `- ref: ${name}`,
-        group: "component-ref",
-        hint: desc || "",
+    const c = ctx || {};
+    if (c.kind === "ref") {
+      const keys = Array.isArray(c.commonSteps) ? c.commonSteps : [];
+      keys.forEach((k) => {
+        items.push({
+          label: k,
+          snippet: k,
+          group: "common-step",
+          hint: "common step",
+        });
       });
+      return items;
+    }
+    // Slash context — two levels:
+    //   * no `key: ` yet on the line (ctx.formKey empty) => suggest every
+    //     distinct form `name` once (names may repeat across rows). Each
+    //     candidate is shown by its human `label` and, when chosen, inserts
+    //     `name: `.
+    //   * the caret sits right after `key: ` (ctx.formKey set): value
+    //     candidates are only offered for fields with fixed rows. A field whose
+    //     rows are ALL type "string" is free-form — it accepts any text, so its
+    //     value stage suggests nothing.
+    const rows = c.forms || [];
+    const key = c.formKey || null;
+    if (key) {
+      const defs = rows.filter((r) => r && r.name === key);
+      const hasFixedValues = defs.some((d) => d.type && d.type !== "string");
+      if (!hasFixedValues) return items; // all-string field: free-form input
+      const seen = new Set();
+      defs.forEach((row) => {
+        if (row.value === undefined || row.value === null) return;
+        const s = String(row.value);
+        if (s.trim() === "" || seen.has(s)) return;
+        seen.add(s);
+        // In the dropdown show the human-readable `display` (falling back to
+        // the raw value) but insert the actual `value` when one is chosen.
+        items.push({
+          label: row.display ? String(row.display) : s,
+          snippet: s,
+          group: "form-value",
+          hint: row.type || "",
+          row,
+        });
+      });
+      return items;
+    }
+    // Field-name stage: group repeated names, remember the first row's label
+    // and whether the group contains any non-string (fixed-value) row.
+    const meta = new Map();
+    rows.forEach((row) => {
+      if (!row || !row.name) return;
+      if (!meta.has(row.name)) {
+        meta.set(row.name, {
+          row,
+          fixedType: row.type && row.type !== "string" ? row.type : "",
+        });
+        return;
+      }
+      const m = meta.get(row.name);
+      if (!m.fixedType && row.type && row.type !== "string") {
+        m.fixedType = row.type;
+      }
     });
-    // 2. Form fields => "key: value" snippets for fast form filling
-    (ctx.forms || []).forEach((row) => {
-      if (!row.name) return;
-      const display =
-        row.value !== undefined && row.value !== ""
-          ? `${row.name}: ${row.value}`
-          : `${row.name}:`;
+    meta.forEach((m, name) => {
       items.push({
-        label: display,
-        snippet: row.value ? `${row.name}: ${row.value}` : `${row.name}: `,
+        label: m.row.label || name,
+        snippet: `${name}: `,
         group: "form",
-        hint: row.label || row.type || "",
-        row,
+        hint: m.fixedType,
+        row: m.row,
       });
     });
     return items;
   }
 
   // Analyze textarea { value, selectionStart } to decide autocomplete context.
-  // Trigger: typing a slash `/` (IDE slash-command style).
-  //   - `/` must be at the beginning of a "token" — either line-start, preceded
-  //     by whitespace, OR preceded by a YAML key terminator `:` followed by space.
-  //   - We do NOT trigger inside a literal token (alphanumerics immediately before
-  //     the `/`) to avoid popping the menu inside URLs / paths / `a/b` words.
   //
-  // Returns:
-  //   { triggerStart: number   // absolute index of the `/` we're replacing
-  //   , prefix      : string   // chars after the triggering `/`, used for filtering
-  //   , kind        : "slash"  // uniform kind for now
-  //   }
-  // or null if nothing actionable.
+  // Two triggers:
+  //   1. `ref: ` — a YAML key token "ref:" followed by a space, at the start of
+  //      a line (allowing leading whitespace or a "- " list prefix). The caret
+  //      sits inside the key being typed after the colon+space.
+  //   2. `/` (slash) — slash-command style (unchanged): `/` at the start of a
+  //      token (line-start / after whitespace / after `: `), never inside a
+  //      literal word (avoids URLs / filenames).
+  //
+  // Returns { triggerStart, prefix, kind: "ref"|"slash" } or null.
   function analyzeContext(value, cursor) {
     const v = value == null ? "" : String(value);
-    if (cursor < 1 || cursor > v.length) return null;
-    // Find the latest `/` in substring [0, cursor).
+    if (cursor < 0 || cursor > v.length) return null;
     const upToCursor = v.slice(0, cursor);
+    const lineStart = upToCursor.lastIndexOf("\n") + 1;
+    const linePrefix = upToCursor.slice(lineStart);
+
+    // --- ref: completion context ---
+    const refMatch = linePrefix.match(
+      /^[ \t]*(?:-\s+)?ref:[ \t]+([\w-]*)$/
+    );
+    if (refMatch) {
+      const colonIdx = linePrefix.indexOf(":");
+      let sp = colonIdx + 1;
+      while (sp < linePrefix.length && /[ \t]/.test(linePrefix[sp])) sp++;
+      return {
+        triggerStart: lineStart + sp,
+        prefix: linePrefix.slice(sp),
+        kind: "ref",
+      };
+    }
+
+    // --- slash completion context ---
+    if (cursor < 1) return null;
     const slashIdx = upToCursor.lastIndexOf("/");
     if (slashIdx < 0) return null;
-    // Boundary rule: the char before `/` must be whitespace, start-of-string, or
-    // the `: ` sequence at the end of a YAML key line. We never trigger when the
-    // preceding character is a letter/digit/underscore (avoids URLs / filenames).
     if (slashIdx > 0) {
       const prev = v.charCodeAt(slashIdx - 1);
       const prevPrev = slashIdx >= 2 ? v[slashIdx - 2] : "";
@@ -417,19 +1064,34 @@
         prev === 95; // _
       if (!isWhitespaceBefore && !isColonSpaceBefore && isWordBefore) return null;
     }
-    // `prefix` is the run of chars between `/` and `cursor` — must not contain
-    // whitespace (indicates user has moved past the query).
     const tail = v.slice(slashIdx + 1, cursor);
     if (/\s/.test(tail)) return null;
-    return { triggerStart: slashIdx, prefix: tail, kind: "slash" };
+    // If the caret sits right after a bare `key: ` (indent + optional list dash,
+    // the key token, colon and spaces only), the slash completes that key's
+    // candidate values; otherwise it starts a fresh field-name query.
+    const lineUpToSlash = upToCursor.slice(lineStart, slashIdx);
+    const keyMatch = lineUpToSlash.match(
+      /^[ \t]*(?:-\s+)?([A-Za-z_][\w-]*):[ \t]*$/
+    );
+    return {
+      triggerStart: slashIdx,
+      prefix: tail,
+      kind: "slash",
+      formKey: keyMatch ? keyMatch[1] : null,
+    };
   }
 
-  // Filter completions by prefix (case-insensitive substring match on label).
-  // With the slash trigger we accept all completion groups.
-  function filterCompletions(items, prefix /*, kind */) {
+  // Filter completions by prefix. Field-name candidates are shown by their
+  // human `label` but insert a `name`, so match both label and snippet text.
+  function filterCompletions(items, prefix) {
     const p = (prefix || "").toLowerCase();
     return items
-      .filter((it) => !p || it.label.toLowerCase().indexOf(p) !== -1)
+      .filter((it) => {
+        if (!p) return true;
+        const label = String(it.label || "").toLowerCase();
+        const snippet = String(it.snippet || "").toLowerCase();
+        return label.indexOf(p) !== -1 || snippet.indexOf(p) !== -1;
+      })
       .slice(0, 25);
   }
 
@@ -437,18 +1099,25 @@
     ALLOWED_FORM_TYPES,
     stripQuotes,
     parseHeader,
-    parseRefs,
     parseFormBlock,
-    parseSteps,
     parseParams,
+    parseActionToken,
+    effectiveAction,
+    parseCommonSteps,
+    indexCommonSteps,
+    parseFlow,
     extractPlaceholderNames,
     resolvePlaceholders,
-    resolvePlaybook,
-    indexComponents,
     indexForms,
     validateForm,
-    validateComponent,
-    validatePlaybook,
+    validateCommonStepsDoc,
+    validatePlaybookFlow,
+    parseServicesDoc,
+    parseNestedYaml,
+    validateServicesDoc,
+    collectServiceInputs,
+    resolveTemplate,
+    queryPath,
     buildCompletions,
     analyzeContext,
     filterCompletions,

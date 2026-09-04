@@ -1,139 +1,105 @@
 // SRE Helper options script
-// Tabs: Settings | Components | Playbook | Form
+// Tabs: ServiceNow (Form | Common | Flows) | Services | Notification (Ringtones | Space Rules)
 //
-// Components (renamed from "Common") and Playbook share one card renderer.
-// Each card uses a *real* CodeMirror 5 YAML editor (vendored locally) instead
-// of a plain textarea, so the writer gets:
-//   - native YAML syntax highlighting
-//   - built-in line numbers
-//   - indent-aware code folding (form: / steps: blocks can collapse)
-//   - bracket auto-close and line-comment toggling with Ctrl-/
-//   - native hint dropdown for slash-triggered completions
+// Playbook cards use a *real* CodeMirror 5 YAML editor (vendored locally).
+// The "Common Steps" tab hosts a single shared document (top-level `params:`
+// + a `common_steps:` map) that playbook `flow:` items reference via `ref:`.
 //
-// Header (name + desc stacked) is derived from the YAML on each change.
-// Per-card Validate button runs semantic checks:
-//   Component: name + form keys/values against the Form library
-//   Playbook : name + step refs against Components + step forms against Forms
+// Header (name + desc stacked) for playbooks is derived from the YAML on each
+// change. Per-card Validate runs semantic checks:
+//   Playbook : name + flow refs against Common Steps + forms against the library
+//   Common   : every common_steps form against the Form library
 //
-// The Form tab exposes a CSV-like, column-fixed table (name / label / value /
-// display / type) with click-to-edit rows. type ∈ {string, number, reference}.
+// The Form tab exposes a CSV-like, column-fixed table (name / label / display /
+// value / type) with click-to-edit rows and a bulk CSV editor (toggle button).
+// type ∈ {string, number, sysid}. `name` is not a unique key: repeating a name
+// groups rows into candidate values for one YAML field.
 
 const Y = SRE_YAML;
 
-const DEFAULT_CONFIG = {
-  displayName: "SRE",
-  refreshInterval: 30,
-  enableNotifications: true,
-  theme: "light",
-  apiEndpoint: "",
-};
-
 const STORES = {
-  component: {
-    storageKey: "sreComponents",
-    legacyKey: "sreCommons",
-    listId: "componentList",
-    addId: "addComponent",
-    validates: "component",
-    placeholder:
-      "# Reusable step component\n" +
-      "#\n" +
-      "# name: ack-step\n" +
-      "# desc: Human acknowledgement step\n" +
-      "# form:\n" +
-      "#   note: ack   # \"note\" must exist in the Form tab\n",
-  },
   playbook: {
     storageKey: "srePlaybooks",
     listId: "playbookList",
     addId: "addPlaybook",
-    validates: "playbook",
     placeholder:
       "# Orchestration flow\n" +
       "#\n" +
-      "# name: incident-response\n" +
-      "# desc: Default incident response flow\n" +
-      "# steps:\n" +
-      "#   - ref: ack-step              # resolve by name from Components\n" +
-      "#   - name: custom-check\n" +
-      "#     desc: Custom inline step\n" +
+      "# name: ask-questions\n" +
+      "# desc: Need more details before acting\n" +
+      "# params:\n" +
+      "#   - name: User Name\n" +
+      "#     type: textarea   # optional: multi-line input box\n" +
+      "# flow:\n" +
+      "#   - name: ack user\n" +
+      "#     ref: ack              # key into the Common Steps doc\n" +
+      "#   - name: custom check\n" +
+      "#     action: true\n" +
       "#     form:\n" +
-      "#       note: check done\n",
+      "#       note: check ${param0}\n",
   },
+};
+
+// The shared Common Steps single document lives under sreCommonSteps as
+// { id, yaml }. Its editor is hosted on the "common" tab.
+const COMMON_DOC_STORE = {
+  storageKey: "sreCommonSteps",
+};
+
+// The shared Services single document lives under sreServices as { id, yaml }.
+// Its editor is hosted on the "services" tab.
+const SERVICES_DOC_STORE = {
+  storageKey: "sreServices",
 };
 
 const FORM_FIELDS = [
   { key: "name",    label: "Name"    },
   { key: "label",   label: "Label"   },
-  { key: "value",   label: "Value"   },
   { key: "display", label: "Display" },
+  { key: "value",   label: "Value"   },
   { key: "type",    label: "Type"    },
 ];
 
-const settingsEls = {
-  displayName: document.getElementById("displayName"),
-  refreshInterval: document.getElementById("refreshInterval"),
-  enableNotifications: document.getElementById("enableNotifications"),
-  theme: document.getElementById("theme"),
-  apiEndpoint: document.getElementById("apiEndpoint"),
-  save: document.getElementById("save"),
-  status: document.getElementById("status"),
-};
-
-let components = [];
 let playbooks = [];
+let commonDoc = null; // { id, yaml }
+let servicesDoc = null; // { id, yaml }
 let forms = []; // Array<{ id, name, label, value, display, type }>
 const saveTimers = {};
 
 /* ---------- Tabs ---------- */
-document.querySelectorAll(".tab").forEach((btn) => {
+// Top-level tabs switch between .tab-page containers.
+document.querySelectorAll(".tab.top").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tab.top").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    document.querySelectorAll(".tab-content").forEach((c) => c.classList.add("hidden"));
-    document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
-    // After a tab-switch, any CodeMirror we unmounted while display:none has
-    // wrong measurement — refresh visible editors.
-    document.querySelectorAll(".CodeMirror").forEach((el) => {
-      if (el.CodeMirror) el.CodeMirror.refresh();
-    });
+    document.querySelectorAll(".tab-page").forEach((p) => p.classList.add("hidden"));
+    document.getElementById("page-" + btn.dataset.tab).classList.remove("hidden");
+    refreshEditors();
   });
 });
 
-/* ---------- Settings ---------- */
-let statusTimer = null;
-function showStatus(msg) {
-  settingsEls.status.textContent = msg;
-  if (statusTimer) clearTimeout(statusTimer);
-  statusTimer = setTimeout(() => {
-    settingsEls.status.textContent = "";
-  }, 2000);
-}
-function fillSettingsForm(cfg) {
-  const c = { ...DEFAULT_CONFIG, ...cfg };
-  settingsEls.displayName.value = c.displayName || "";
-  settingsEls.refreshInterval.value = c.refreshInterval;
-  settingsEls.enableNotifications.checked = !!c.enableNotifications;
-  settingsEls.theme.value = c.theme || "light";
-  settingsEls.apiEndpoint.value = c.apiEndpoint || "";
-}
-function readSettingsForm() {
-  return {
-    displayName: settingsEls.displayName.value.trim() || "SRE",
-    refreshInterval: Math.max(
-      5,
-      Math.min(3600, parseInt(settingsEls.refreshInterval.value, 10) || 30)
-    ),
-    enableNotifications: settingsEls.enableNotifications.checked,
-    theme: settingsEls.theme.value,
-    apiEndpoint: settingsEls.apiEndpoint.value.trim(),
-  };
-}
-settingsEls.save.addEventListener("click", () => {
-  chrome.storage.local.set({ sreConfig: readSettingsForm() }, () =>
-    showStatus("Saved \u2713")
-  );
+// Sub-tabs only switch the inner .tab-content blocks of their own page, so a
+// ServiceNow (Form/Common/Flows) selection is kept independently from
+// Notification (Ringtones/Space Rules).
+document.querySelectorAll(".subtab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const page = btn.closest(".tab-page");
+    if (!page) return;
+    page.querySelectorAll(".subtab").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    page.querySelectorAll(".tab-content").forEach((c) => c.classList.add("hidden"));
+    document.getElementById("tab-" + btn.dataset.subtab).classList.remove("hidden");
+    refreshEditors();
+  });
 });
+
+// After a tab-switch, any CodeMirror we unmounted while display:none has
+// wrong measurement — refresh visible editors.
+function refreshEditors() {
+  document.querySelectorAll(".CodeMirror").forEach((el) => {
+    if (el.CodeMirror) el.CodeMirror.refresh();
+  });
+}
 
 /* ---------- Utilities ---------- */
 function uid() {
@@ -154,18 +120,33 @@ function normalizeCard(c) {
   if (c && c.yaml) yaml += c.yaml;
   return { id: (c && c.id) || uid(), yaml, collapsed: !!(c && c.collapsed) };
 }
-function arrayFor(kind) {
-  return kind === "component" ? components : playbooks;
+
+/* ---------- Storage helpers ---------- */
+function persistPlaybooks() {
+  chrome.storage.local.set({ [STORES.playbook.storageKey]: playbooks });
 }
-function persist(kind) {
-  const key = STORES[kind].storageKey;
-  chrome.storage.local.set({ [key]: arrayFor(kind) });
+function savePlaybooks() {
+  clearTimeout(saveTimers.playbook);
+  saveTimers.playbook = setTimeout(persistPlaybooks, 400);
 }
-function save(kind) {
-  clearTimeout(saveTimers[kind]);
-  saveTimers[kind] = setTimeout(() => persist(kind), 400);
+function persistCommonDoc() {
+  if (commonDoc) {
+    chrome.storage.local.set({ [COMMON_DOC_STORE.storageKey]: commonDoc });
+  }
+}
+function saveCommonDoc() {
+  clearTimeout(saveTimers.commonDoc);
+  saveTimers.commonDoc = setTimeout(persistCommonDoc, 400);
+}
+function persistServicesDoc() {
+  if (servicesDoc) {
+    chrome.storage.local.set({ [SERVICES_DOC_STORE.storageKey]: servicesDoc });
+  }
+}
+function saveServicesDoc() {
+  clearTimeout(saveTimers.servicesDoc);
+  saveTimers.servicesDoc = setTimeout(persistServicesDoc, 400);
 }
 function persistForms() {
   chrome.storage.local.set({ sreForms: forms });
 }
-

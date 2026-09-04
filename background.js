@@ -6,14 +6,6 @@
 /* ---------- Storage seeding ---------- */
 
 const DEFAULT_STORAGE = {
-  sreConfig: {
-    displayName: "SRE",
-    refreshInterval: 30,
-    enableNotifications: true,
-    theme: "light",
-    apiEndpoint: "",
-  },
-  sreComponents: [],
   srePlaybooks: [],
   sreForms: [],
   // Ringtones library: [{ id, name, durationSec, mime, dataUrl, sizeBytes, createdAt }]
@@ -40,14 +32,7 @@ function seedDefaultStorage() {
   const keys = Object.keys(DEFAULT_STORAGE);
   chrome.storage.local.get(keys, (data) => {
     const updates = {};
-    // sreComponents migration (sreCommons -> sreComponents).
-    if (data.sreComponents === undefined) {
-      updates.sreComponents = Array.isArray(data.sreCommons)
-        ? data.sreCommons
-        : [];
-    }
     for (const [k, defaultVal] of Object.entries(DEFAULT_STORAGE)) {
-      if (k === "sreComponents") continue;
       if (data[k] === undefined) updates[k] = structuredClone(defaultVal);
     }
     if (Object.keys(updates).length) chrome.storage.local.set(updates);

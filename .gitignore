@@ -20,6 +20,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Local-only API test server (not part of the extension)
+api-server/
+
 # Packaged extension artifacts
 *.crx
 *.zip

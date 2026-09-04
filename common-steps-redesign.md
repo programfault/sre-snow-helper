@@ -95,4 +95,4 @@ flow:
 
 - flow 项识别：`^[ \t]+- (?:name|ref|desc|form|action):`。
 - `action` 布尔取值：true/false、yes/no、on/off、1/0。
-- form 校验：form key 必须存在于 Form 库；非 string 类型的值须等于定义 value。
+- form 校验：form key 必须存在于 Form 库（按 name 归组）。若该字段任一行 type 非 string，YAML 值须等于其中某行的 value；全部为 string 则任意值通过。

@@ -63,15 +63,42 @@
     .tab-content { display: block; }
     .tab-content.hidden { display: none; }
 
-    /* ---------- Settings card / fields ---------- */
+    /* ---------- Top-level pages (ServiceNow | Services | Notification) ---------- */
+    .tab-page { display: block; }
+    .tab-page.hidden { display: none; }
+
+    /* Second-level sub-tab bar shown inside a page (pill style). */
+    .subtabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 20px;
+    }
+    .subtab {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+      padding: 6px 16px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .subtab:hover { background: var(--bg); color: var(--text); }
+    .subtab.active {
+      background: var(--primary-soft);
+      color: var(--primary);
+      border-color: #c9d6ff;
+    }
+
+    /* ---------- Card / fields ---------- */
     .card {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 20px;
     }
-    .field { margin-bottom: 18px; }
-    .field:last-child { margin-bottom: 0; }
     label { display: block; font-weight: 600; margin-bottom: 6px; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
     input[type="text"],
@@ -260,6 +287,29 @@
       font-size: 13px;
     }
 
+    /* ---------- Common Steps single-document tab ---------- */
+    .common-toolbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .common-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .common-note code {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0 4px;
+      font-size: 11.5px;
+    }
+    .common-editor-wrap { margin-top: 12px; }
+    .common-editor-wrap .CodeMirror {
+      min-height: 420px;
+      height: auto;
+      resize: vertical;
+    }
+
     /* CodeMirror hint dropdown decoration (rendered inside each hint <li>) */
     .CodeMirror-hints .ac-group-lead {
       font-size: 10.5px;
@@ -377,6 +427,7 @@
     }
     .type-badge.string    { background: #e9f7ef; color: var(--success); }
     .type-badge.number    { background: #eef2ff; color: var(--primary); }
+    .type-badge.sysid,
     .type-badge.reference { background: #f3ecff; color: #6f42c1; }
     .row-actions { display: flex; justify-content: flex-end; gap: 4px; }
     .row-btn {
@@ -407,6 +458,59 @@
       border-radius: 8px;
       font-size: 12px;
       margin-top: 8px;
+      white-space: pre-line;
+    }
+    .form-error:empty { display: none; }
+    .form-toolbar-actions { display: flex; gap: 8px; align-items: center; }
+    .form-csv-wrap { display: none; }
+    .form-csv-wrap.open { display: block; }
+    .form-csv-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+    .form-csv-note code,
+    .form-csv-example {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+    .form-csv-example {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .form-csv-input {
+      width: 100%;
+      height: 42vh;
+      min-height: 240px;
+      box-sizing: border-box;
+      resize: vertical;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--card-bg);
+      color: var(--text);
+    }
+    .form-csv-input:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    .form-csv-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      gap: 12px;
     }
 
     /* ---------- Ringtones tab ---------- */
@@ -529,109 +633,122 @@
 <body>
   <div class="wrap">
     <h1>SRE Helper Options</h1>
-    <p class="desc">Settings, components, playbooks, and the form library are saved locally and sync to the side panel in real time.</p>
+    <p class="desc">ServiceNow flows, runnable services, and notification settings are saved locally and sync to the side panel in real time.</p>
 
     <div class="tabs">
-      <button class="tab active" data-tab="settings">Settings</button>
-      <button class="tab" data-tab="component">Components</button>
-      <button class="tab" data-tab="playbook">Playbook</button>
-      <button class="tab" data-tab="form">Form</button>
-      <button class="tab" data-tab="ringtones">Ringtones</button>
-      <button class="tab" data-tab="chatspaces">Chat Spaces</button>
+      <button class="tab top active" data-tab="servicenow">ServiceNow</button>
+      <button class="tab top" data-tab="services">Services</button>
+      <button class="tab top" data-tab="notification">Notification</button>
     </div>
 
-    <!-- Settings tab -->
-    <div class="tab-content" id="tab-settings">
-      <div class="card">
-        <div class="field">
-          <label for="displayName">Display name</label>
-          <input type="text" id="displayName" placeholder="e.g. SRE" />
-          <div class="hint">Used by the side panel greeting.</div>
-        </div>
-        <div class="field">
-          <label for="refreshInterval">Refresh interval (seconds)</label>
-          <input type="number" id="refreshInterval" min="5" max="3600" step="5" />
-          <div class="hint">Auto-refresh interval, 5 ~ 3600 seconds.</div>
-        </div>
-        <div class="field">
-          <div class="toggle-row">
-            <div><label for="enableNotifications">Enable notifications</label></div>
-            <label class="switch">
-              <input type="checkbox" id="enableNotifications" />
-              <span class="slider"></span>
-            </label>
+    <!-- ServiceNow page: Form | Common | Flows -->
+    <div class="tab-page" id="page-servicenow">
+      <div class="subtabs">
+        <button class="subtab" data-subtab="form">Form</button>
+        <button class="subtab active" data-subtab="common">Common</button>
+        <button class="subtab" data-subtab="flows">Flows</button>
+      </div>
+
+      <!-- Form sub-tab -->
+      <div class="tab-content hidden" id="tab-form">
+        <div class="form-toolbar">
+          <span class="note">Fixed columns <code>name,label,display,value,type</code>. A repeated <code>name</code> = candidate values for one field (no longer a unique key). Edit rows via the per-row <b>Edit</b> button, or paste many rows at once in the CSV editor.</span>
+          <div class="form-toolbar-actions">
+            <button class="btn" id="toggleFormCsv">CSV 编辑</button>
+            <button class="btn btn-primary" id="addFormRow">+ Add row</button>
           </div>
         </div>
-        <div class="field">
-          <label for="theme">Theme</label>
-          <select id="theme">
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
+        <div id="formTableWrap"></div>
+        <div class="form-csv-wrap" id="formCsvWrap">
+          <div class="form-csv-note">Paste rows — one per line, columns in order <code>name,label,display,value,type</code>. <code>type</code> may be omitted (defaults to <code>string</code>). Quote a field with double quotes if it contains a comma / quote / newline. Saving replaces the whole table.</div>
+          <pre class="form-csv-example">state,State,In Progress,2
+state,State,On Hold,3
+state,State,Resolved,6</pre>
+          <textarea id="formCsvInput" class="form-csv-input" spellcheck="false"></textarea>
+          <div class="form-error" id="formCsvError"></div>
+          <div class="form-csv-footer">
+            <span class="note">Duplicate <code>name</code> rows are allowed.</span>
+            <div class="form-toolbar-actions">
+              <button class="btn" id="formCsvCancel">Cancel</button>
+              <button class="btn btn-primary" id="formCsvSave">Save CSV</button>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label for="apiEndpoint">API endpoint (optional)</label>
-          <input type="text" id="apiEndpoint" placeholder="https://api.example.com" />
-          <div class="hint">Used later when data fetching is added.</div>
+      </div>
+
+      <!-- Common sub-tab (single shared document) -->
+      <div class="tab-content" id="tab-common">
+        <div class="common-toolbar">
+          <span class="common-note">One shared document of reusable steps. ServiceNow <code>flow:</code> items reference them via <code>ref:</code>. Params here (<code>${param0}</code>...) resolve inside these steps' forms.</span>
+          <button class="btn btn-ghost" id="validateCommonDoc">Validate</button>
         </div>
-        <div class="actions">
-          <button class="btn btn-primary" id="save">Save</button>
-          <span class="status" id="status"></span>
+        <div class="pb-card">
+          <div class="pb-body">
+            <div class="pb-editor-wrap common-editor-wrap" id="commonEditor"></div>
+            <div class="pb-validation" id="commonValidation"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Flows sub-tab -->
+      <div class="tab-content hidden" id="tab-flows">
+        <div class="pb-toolbar">
+          <button class="btn btn-primary" id="addPlaybook">+ Add flow</button>
+        </div>
+        <div class="pb-list" id="playbookList"></div>
+      </div>
+    </div>
+
+    <!-- Services page (single shared document) -->
+    <div class="tab-page hidden" id="page-services">
+      <div class="tab-content" id="tab-services">
+        <div class="common-toolbar">
+          <span class="common-note">One shared document of runnable services (top-level <code>services:</code> list). Each entry is an API call or a <code>type: group</code> (whose nested <code>services:</code> run top to bottom). Variables are written <code>${name}</code>; when a <code>name</code> matches an <code>output.alias</code> of an earlier service <b>in the same group</b> it is chained automatically, otherwise it is prompted as an input in the side panel.</span>
+          <button class="btn btn-ghost" id="validateServicesDoc">Validate</button>
+        </div>
+        <div class="pb-card">
+          <div class="pb-body">
+            <div class="pb-editor-wrap common-editor-wrap" id="servicesEditor"></div>
+            <div class="pb-validation" id="servicesValidation"></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Components tab (was Common) -->
-    <div class="tab-content hidden" id="tab-component">
-      <div class="pb-toolbar">
-        <button class="btn btn-primary" id="addComponent">+ Add component</button>
+    <!-- Notification page: Ringtones | Space Rules -->
+    <div class="tab-page hidden" id="page-notification">
+      <div class="subtabs">
+        <button class="subtab active" data-subtab="ringtones">Ringtones</button>
+        <button class="subtab" data-subtab="chatspaces">Space Rules</button>
       </div>
-      <div class="pb-list" id="componentList"></div>
-    </div>
 
-    <!-- Playbook tab -->
-    <div class="tab-content hidden" id="tab-playbook">
-      <div class="pb-toolbar">
-        <button class="btn btn-primary" id="addPlaybook">+ Add playbook</button>
-      </div>
-      <div class="pb-list" id="playbookList"></div>
-    </div>
-
-    <!-- Form tab -->
-    <div class="tab-content hidden" id="tab-form">
-      <div class="form-toolbar">
-        <span class="note">Click a row to edit. Fields are fixed — you may add rows but not columns. Type: <b>string</b> (any value OK), <b>number</b> / <b>reference</b> (YAML value must match the defined <code>value</code>).</span>
-        <button class="btn btn-primary" id="addFormRow">+ Add row</button>
-      </div>
-      <div id="formTableWrap"></div>
-    </div>
-
-    <!-- Ringtones tab -->
-    <div class="tab-content hidden" id="tab-ringtones">
-      <div class="ring-toolbar">
-        <div>
-          <h2>Ringtone library</h2>
-          <div class="hint">Upload mp3 / wav / ogg files. Audio is stored as base64 in <code>chrome.storage.local</code> (default 5 MB total; if you need more we can request unlimitedStorage). Use the ▶ to preview, Del to remove. A ringtone referenced by any rule can't be deleted until the rule is unlinked.</div>
+      <!-- Ringtones sub-tab -->
+      <div class="tab-content" id="tab-ringtones">
+        <div class="ring-toolbar">
+          <div>
+            <h2>Ringtone library</h2>
+            <div class="hint">Upload mp3 / wav / ogg files. Audio is stored as base64 in <code>chrome.storage.local</code> (default 5 MB total; if you need more we can request unlimitedStorage). Use the ▶ to preview, Del to remove. A ringtone referenced by any rule can't be deleted until the rule is unlinked.</div>
+          </div>
+          <div>
+            <button class="btn btn-primary" id="addRingtoneBtn">+ Upload ringtone</button>
+            <input type="file" id="ringtoneFileInput" accept="audio/*" multiple hidden />
+          </div>
         </div>
-        <div>
-          <button class="btn btn-primary" id="addRingtoneBtn">+ Upload ringtone</button>
-          <input type="file" id="ringtoneFileInput" accept="audio/*" multiple hidden />
-        </div>
+        <div id="ringtonesList"></div>
       </div>
-      <div id="ringtonesList"></div>
-    </div>
 
-    <!-- Chat Spaces tab -->
-    <div class="tab-content hidden" id="tab-chatspaces">
-      <div class="ring-toolbar">
-        <div>
-          <h2>Space rules</h2>
-          <div class="hint">Each rule maps a Google Chat Space (matched by its sidebar name) to a ringtone. When new unread messages appear, the rule enters ALERTING and rings every N seconds until the Space is read or max repeats is reached.</div>
+      <!-- Space Rules sub-tab -->
+      <div class="tab-content hidden" id="tab-chatspaces">
+        <div class="ring-toolbar">
+          <div>
+            <h2>Space rules</h2>
+            <div class="hint">Each rule maps a Google Chat Space (matched by its sidebar name) to a ringtone. When new unread messages appear, the rule enters ALERTING and rings every N seconds until the Space is read or max repeats is reached.</div>
+          </div>
+          <button class="btn btn-primary" id="addChatRuleBtn">+ Add rule</button>
         </div>
-        <button class="btn btn-primary" id="addChatRuleBtn">+ Add rule</button>
+        <div id="chatRulesEditForm"></div>
+        <div id="chatRulesList"></div>
       </div>
-      <div id="chatRulesEditForm"></div>
-      <div id="chatRulesList"></div>
     </div>
   </div>
 
@@ -648,6 +765,8 @@
   <!-- options logic, split by subsystem; load order matters (classic scripts share global scope). -->
   <script src="options-core.js"></script>
   <script src="options-cards.js"></script>
+  <script src="options-common.js"></script>
+  <script src="options-services.js"></script>
   <script src="options-forms.js"></script>
   <script src="options-init.js"></script>
   <script src="options-ringtones.js"></script>

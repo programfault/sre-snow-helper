@@ -1,7 +1,120 @@
-/* ---------- Form tab (column-fixed CSV-like table) ---------- */
+/* ---------- Form tab (column-fixed table <-> raw CSV editor) ---------- */
 
 const FORM_FORM_WRAP_ID = "formTableWrap";
+const FORM_CSV_WRAP_ID = "formCsvWrap";
+const FORM_CSV_INPUT_ID = "formCsvInput";
+const FORM_CSV_ERROR_ID = "formCsvError";
 let editingFormId = null;
+let formCsvMode = false;
+
+/* ---------- CSV (de)serialization ---------- */
+// The table and the CSV editor share one shape per line, column order =
+// FORM_FIELDS: name,label,display,value,type.
+
+function csvEscape(v) {
+  const s = v === undefined || v === null ? "" : String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function formsToCsv() {
+  return forms
+    .map((row) => FORM_FIELDS.map((f) => csvEscape(row[f.key])).join(","))
+    .join("\n");
+}
+
+// Minimal RFC-4180-ish parser: double quotes escape quotes, commas and
+// newlines may live inside quoted fields.
+function csvParse(text) {
+  const src = String(text).replace(/\r\n?/g, "\n");
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          quoted = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ",") {
+      row.push(field);
+      field = "";
+    } else if (ch === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== "" || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+// Map parsed cells to form rows. Blank lines are skipped; malformed lines are
+// reported instead of silently dropped.
+function csvImport(text) {
+  const out = [];
+  const problems = [];
+  csvParse(text).forEach((cells, idx) => {
+    if (cells.every((c) => String(c).trim() === "")) return;
+    const lineNo = idx + 1;
+    const name = String(cells[0] ?? "").trim();
+    const label = String(cells[1] ?? "").trim();
+    const display = String(cells[2] ?? "").trim();
+    const value = String(cells[3] ?? ""); // keep raw — may be quoted on purpose
+    const type = String(cells[4] ?? "").trim() || "string";
+    if (!name) {
+      problems.push(`line ${lineNo}: missing name`);
+      return;
+    }
+    if (!Y.ALLOWED_FORM_TYPES.includes(type)) {
+      problems.push(
+        `line ${lineNo}: unknown type "${type}" (expected ${Y.ALLOWED_FORM_TYPES.join(" | ")})`
+      );
+      return;
+    }
+    out.push({ id: uid(), name, label, value, display, type });
+  });
+  return { rows: out, problems };
+}
+
+/* ---------- Table <-> CSV view ---------- */
+
+function clearCsvError() {
+  const el = document.getElementById(FORM_CSV_ERROR_ID);
+  if (el) el.textContent = "";
+}
+
+function showCsvView() {
+  formCsvMode = true;
+  document.getElementById(FORM_CSV_INPUT_ID).value = formsToCsv();
+  clearCsvError();
+  document.getElementById(FORM_FORM_WRAP_ID).style.display = "none";
+  document.getElementById(FORM_CSV_WRAP_ID).classList.add("open");
+  document.getElementById("toggleFormCsv").textContent = "表格视图";
+}
+
+function showTableView() {
+  formCsvMode = false;
+  clearCsvError();
+  document.getElementById(FORM_CSV_WRAP_ID).classList.remove("open");
+  document.getElementById(FORM_FORM_WRAP_ID).style.display = "";
+  document.getElementById("toggleFormCsv").textContent = "CSV 编辑";
+}
 
 function renderForms() {
   const wrap = document.getElementById(FORM_FORM_WRAP_ID);
@@ -9,7 +122,7 @@ function renderForms() {
   if (forms.length === 0) {
     const empty = document.createElement("div");
     empty.className = "card";
-    empty.innerHTML = `<div class="form-empty">No form fields yet. Click "+ Add row" to define one.</div>`;
+    empty.innerHTML = `<div class="form-empty">No form fields yet. Click "+ Add row" to define one, or paste a whole table with the CSV editor.</div>`;
     wrap.appendChild(empty);
     return;
   }
@@ -74,7 +187,6 @@ function renderForms() {
           valueEl.textContent = v !== undefined && v !== "" ? String(v) : "\u2014";
         }
         cell.appendChild(valueEl);
-        cell.addEventListener("click", () => enterEdit(row.id));
       }
       td.appendChild(cell);
       tr.appendChild(td);
@@ -152,11 +264,6 @@ function commitEdit(tr, rowId) {
   });
   if (!patch.name) {
     hasError = "name is required";
-  } else {
-    const dup = forms.find(
-      (r) => r.id !== rowId && String(r.name) === patch.name
-    );
-    if (dup) hasError = `duplicate name "${patch.name}"`;
   }
   if (!hasError && patch.type && patch.type !== "string") {
     if (patch.value === undefined || String(patch.value).trim() === "") {
@@ -204,3 +311,26 @@ document.getElementById("addFormRow").addEventListener("click", () => {
   renderForms();
 });
 
+document.getElementById("toggleFormCsv").addEventListener("click", () => {
+  if (formCsvMode) showTableView();
+  else showCsvView();
+});
+
+document.getElementById("formCsvCancel").addEventListener("click", () => {
+  showTableView();
+});
+
+document.getElementById("formCsvSave").addEventListener("click", () => {
+  const ta = document.getElementById(FORM_CSV_INPUT_ID);
+  const { rows, problems } = csvImport(ta.value);
+  const errEl = document.getElementById(FORM_CSV_ERROR_ID);
+  if (problems.length > 0) {
+    errEl.textContent = problems.join("\n");
+    return;
+  }
+  forms = rows;
+  editingFormId = null;
+  persistForms();
+  renderForms();
+  showTableView();
+});

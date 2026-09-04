@@ -10,17 +10,6 @@
   --code-bg: #f7f8fa;
 }
 
-body.dark {
-  --bg: #1e1f22;
-  --card-bg: #27282d;
-  --text: #e8e9eb;
-  --muted: #8b8d93;
-  --border: #35363c;
-  --primary: #4d83ff;
-  --primary-soft: #2a3350;
-  --code-bg: #222326;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -273,7 +262,8 @@ body {
   flex: 1;
 }
 
-.param-row input {
+.param-row input,
+.param-row textarea {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -282,7 +272,15 @@ body {
   color: var(--text);
 }
 
-.param-row input:focus {
+.param-row textarea {
+  resize: vertical;
+  min-height: 64px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.param-row input:focus,
+.param-row textarea:focus {
   outline: none;
   border-color: var(--primary);
 }
@@ -354,15 +352,16 @@ body {
   margin-top: 1px;
 }
 
-/* ---------- Execute button ---------- */
+/* ---------- Execute buttons (Dry Run / Execute, left-right) ---------- */
 .execute-row {
   margin-top: 16px;
   display: flex;
-  justify-content: flex-end;
+  gap: 8px;
 }
 
 .btn-execute {
-  padding: 8px 20px;
+  flex: 1 1 0;
+  padding: 8px 12px;
   border: none;
   border-radius: 8px;
   background: var(--primary);
@@ -384,6 +383,11 @@ body {
 .btn-execute:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Dry Run uses 墨绿 (dark ink green): preview only, nothing is sent. */
+.btn-execute.btn-dryrun {
+  background: #0b6b4f;
 }
 
 /* ---------- Executed step result (HTTP body preview) ---------- */
@@ -565,7 +569,6 @@ body {
   border: 1px solid var(--border);
   font-size: 12px;
 }
-body.dark .chat-tab-warning { background: #2c220f; color: #f0c060; border-color: var(--border); }
 .chat-tab-info {
   padding: 8px 12px; border-radius: 10px;
   background: var(--primary-soft); color: var(--primary);
@@ -620,11 +623,51 @@ body.dark .chat-tab-warning { background: #2c220f; color: #f0c060; border-color:
   flex-shrink: 0;
 }
 .state-badge-idle { background: #e8f5ee; color: var(--success); }
-body.dark .state-badge-idle { background: #1f3a2d; }
 .state-badge-alert { background: #fff0e6; color: var(--warning); }
-body.dark .state-badge-alert { background: #3a2a1a; }
 .state-badge-off { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
 .chat-rule-empty {
   border: 1px dashed var(--border);
   border-radius: 10px;
+}
+
+/* ---------- Services panel ---------- */
+.svc-endpoint {
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.svc-method {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.m-get    { background: #e8f5ee; color: var(--success); }
+.m-post   { background: var(--primary-soft); color: var(--primary); }
+.m-put    { background: #f3ecff; color: #6f42c1; }
+.m-patch  { background: #f3ecff; color: #6f42c1; }
+.m-delete { background: #fdecec; color: #e5484d; }
+
+.svc-output-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.svc-out-chip {
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 10px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.svc-var-hint {
+  font-size: 11px;
+  color: var(--muted);
 }
