@@ -1,0 +1,21 @@
+# Enforce LF line endings for source files; the Chrome extension runtime doesn't
+# care, but Git/GitHub diffs are less noisy this way.
+* text=auto eol=lf
+
+# Source files
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# Vendored CodeMirror (JS/CSS are also text)
+codemirror/*.js  text eol=lf
+codemirror/*.css text eol=lf
+
+# Images + icons
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

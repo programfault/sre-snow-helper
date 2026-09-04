@@ -1,0 +1,630 @@
+:root {
+  --bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --text: #1f2329;
+  --muted: #8a9099;
+  --border: #e5e6eb;
+  --primary: #2b65ff;
+  --primary-soft: #eaf0ff;
+  --success: #00a870;
+  --code-bg: #f7f8fa;
+}
+
+body.dark {
+  --bg: #1e1f22;
+  --card-bg: #27282d;
+  --text: #e8e9eb;
+  --muted: #8b8d93;
+  --border: #35363c;
+  --primary: #4d83ff;
+  --primary-soft: #2a3350;
+  --code-bg: #222326;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ---------- Header ---------- */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--primary), #6aa1ff);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.brand-text h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+}
+
+.icon-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ---------- Content ---------- */
+.content {
+  padding: 14px;
+}
+
+.empty-state {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 32px 0;
+}
+
+/* ---------- Mega Panel (wraps all playbooks) ---------- */
+.mega-panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.mega-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.mega-header:hover {
+  background: var(--bg);
+}
+
+.mega-toggle {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  transition: transform 0.18s;
+}
+
+.mega-panel.collapsed .mega-toggle {
+  transform: rotate(-90deg);
+}
+
+.mega-panel.collapsed .mega-header {
+  border-bottom: none;
+}
+
+.mega-title {
+  font-size: 14px;
+  font-weight: 700;
+  flex: 1;
+}
+
+.mega-count {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.mega-body {
+  padding: 12px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mega-panel.collapsed .mega-body {
+  display: none;
+}
+
+/* ---------- Playbook card ---------- */
+.pb-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--card-bg);
+}
+
+.pb-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pb-card-header:hover {
+  background: var(--bg);
+}
+
+.pb-card-toggle {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  margin-top: 1px;
+  transition: transform 0.18s;
+}
+
+.pb-card.collapsed .pb-card-toggle {
+  transform: rotate(-90deg);
+}
+
+.pb-card-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.pb-card-name {
+  font-weight: 600;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.pb-card-desc {
+  color: var(--muted);
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.pb-card-body {
+  padding: 8px 14px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.pb-card.collapsed .pb-card-body {
+  display: none;
+}
+
+/* ---------- Params form ---------- */
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 14px 0 8px;
+}
+
+.section-label:first-child {
+  margin-top: 6px;
+}
+
+.param-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.param-row label {
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.param-source {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.param-label-text {
+  flex: 1;
+}
+
+.param-row input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--card-bg);
+  color: var(--text);
+}
+
+.param-row input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+/* ---------- Steps list ---------- */
+.steps-container {
+  border-left: 2px solid var(--border);
+  margin-left: 4px;
+  padding-left: 10px;
+}
+
+.step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.step-item:last-child {
+  border-bottom: none;
+}
+
+.step-index {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.step-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.step-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.step-ref-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.step-desc {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+/* ---------- Execute button ---------- */
+.execute-row {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-execute {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.btn-execute:hover {
+  filter: brightness(1.1);
+}
+
+.btn-execute:active {
+  transform: scale(0.97);
+}
+
+.btn-execute:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Executed step result (HTTP body preview) ---------- */
+.step-result {
+  margin-top: 4px;
+  margin-bottom: 6px;
+}
+
+.step-result-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.step-result-body {
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  background: var(--code-bg);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------- Toast ---------- */
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: auto;
+  animation: toast-in 0.2s ease;
+  max-width: 320px;
+  word-break: break-word;
+}
+
+.toast.toast-success {
+  border-left-color: var(--success);
+}
+
+.toast.toast-error {
+  border-left-color: #e5484d;
+}
+
+.toast.toast-info {
+  border-left-color: var(--primary);
+}
+
+.toast-head {
+  font-weight: 600;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toast-body {
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--code-bg);
+  padding: 4px 6px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.toast.toast-out {
+  animation: toast-out 0.2s ease forwards;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+}
+
+/* ---------- Chat Ring Monitor panel (reuses mega-panel + pb-card styling) ---------- */
+.chat-monitor-mega {
+  margin-bottom: var(--spacer-12);
+}
+
+.chat-monitor-head .mega-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* Right-aligned count pill & toggle switch row share header line. */
+.chat-monitor-head .mega-count {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* Pulse status dot + switch in header (left of mega-count) */
+.monitor-status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(0, 168, 112, 0.15);
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+.monitor-status-dot.off {
+  background: var(--muted);
+  box-shadow: none;
+  animation: none;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.monitor-switch {
+  position: relative; display: inline-block;
+  width: 38px; height: 22px; flex-shrink: 0;
+}
+.monitor-switch input { display: none; }
+.monitor-slider {
+  position: absolute; inset: 0;
+  background: var(--muted); border-radius: 22px;
+  transition: background 0.15s; cursor: pointer;
+}
+.monitor-slider::before {
+  position: absolute; content: "";
+  height: 16px; width: 16px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%;
+  transition: transform 0.15s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.monitor-switch input:checked + .monitor-slider { background: var(--primary); }
+.monitor-switch input:checked + .monitor-slider::before { transform: translateX(16px); }
+
+/* mega-body default 12px all-side padding aligns to playbooks. */
+.chat-monitor-body {
+  gap: var(--spacer-12);
+}
+
+.chat-tab-warning {
+  display: flex; align-items: center; gap: var(--spacer-12);
+  padding: 10px 12px; border-radius: 10px;
+  background: #fff6e6; color: #8a5200;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+body.dark .chat-tab-warning { background: #2c220f; color: #f0c060; border-color: var(--border); }
+.chat-tab-info {
+  padding: 8px 12px; border-radius: 10px;
+  background: var(--primary-soft); color: var(--primary);
+  border: 1px solid var(--border);
+  font-size: 12px; font-weight: var(--weight-medium);
+}
+.chat-tab-info-muted {
+  background: var(--code-bg); color: var(--muted);
+}
+
+/* Three stats mini-cards — retained the grid placeholder but tiles now
+   inherit pb-card visual language. Not shown on current UI (stats hidden),
+   but leave the grid + pb-card style so future additions can plug in. */
+.chat-stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--spacer-8);
+}
+.chat-stat-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.chat-stats-row .section-label {
+  margin: 0 0 4px;
+}
+
+.chat-rule-status-list {
+  display: flex; flex-direction: column; gap: var(--spacer-8);
+}
+.chat-rule-status-item {
+  display: flex; align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+}
+.chat-rule-left { flex: 1; min-width: 0; }
+.chat-rule-name {
+  font-weight: var(--weight-medium); font-size: 13px;
+}
+.chat-rule-meta {
+  font-size: 11px; color: var(--muted); margin-top: 2px;
+}
+.chat-rule-badge {
+  font-size: 10px;
+  font-weight: var(--weight-strong);
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.state-badge-idle { background: #e8f5ee; color: var(--success); }
+body.dark .state-badge-idle { background: #1f3a2d; }
+.state-badge-alert { background: #fff0e6; color: var(--warning); }
+body.dark .state-badge-alert { background: #3a2a1a; }
+.state-badge-off { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+.chat-rule-empty {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}

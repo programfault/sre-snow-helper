@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "SRE Helper",
+  "version": "1.0.0",
+  "description": "SRE Helper: a persistent right-side panel that stays open across tab switches and page navigation.",
+  "permissions": ["sidePanel", "storage", "notifications", "tabs"],
+  "host_permissions": ["*://chat.google.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://chat.google.com/*"],
+      "js": ["chat-content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Open SRE Helper side panel",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

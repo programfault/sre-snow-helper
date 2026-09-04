@@ -1,0 +1,32 @@
+# OS / editor junk
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node / local tooling (none used right now, but reserved)
+node_modules/
+dist/
+build/
+out/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Packaged extension artifacts
+*.crx
+*.zip
+
+# Privacy / local state
+# SRE Helper persists user data in chrome.storage; nothing should leak here.
+# But keep a defensive guard in case someone drops a backup / export file:
+*.bak
+*.local.json
+*.export.json

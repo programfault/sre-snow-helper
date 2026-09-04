@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SRE Helper - Options</title>
+  <!-- CodeMirror 5 (vendored) – the YAML editor ships its own gutter,
+       highlighting, fold arrows and hint UI; we just mount it on our textarea. -->
+  <link rel="stylesheet" href="codemirror/codemirror.css" />
+  <link rel="stylesheet" href="codemirror/show-hint.css" />
+  <link rel="stylesheet" href="codemirror/foldgutter.css" />
+  <link rel="stylesheet" href="codemirror/theme-eclipse.css" />
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --card-bg: #ffffff;
+      --text: #1f2329;
+      --muted: #8a9099;
+      --border: #e5e6eb;
+      --primary: #2b65ff;
+      --primary-soft: #eaf0ff;
+      --success: #00a870;
+      --danger: #e34d4d;
+      --code-bg: #f7f8fa;
+      --row-hover: #fafbfc;
+      --row-editing: #fffbe6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 40px 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .desc { color: var(--muted); margin: 0 0 20px; }
+
+    /* ---------- Tabs ---------- */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .tab {
+      appearance: none;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .tab-content { display: block; }
+    .tab-content.hidden { display: none; }
+
+    /* ---------- Settings card / fields ---------- */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .field { margin-bottom: 18px; }
+    .field:last-child { margin-bottom: 0; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: #fff;
+      color: var(--text);
+    }
+    input:focus, select:focus { outline: none; border-color: var(--primary); }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .toggle-row label { margin: 0; }
+    .switch { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0; background: #c9cdd4;
+      border-radius: 24px; cursor: pointer; transition: 0.2s;
+    }
+    .slider::before {
+      content: ""; position: absolute; width: 18px; height: 18px;
+      left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: 0.2s;
+    }
+    .switch input:checked + .slider { background: var(--primary); }
+    .switch input:checked + .slider::before { transform: translateX(18px); }
+    .actions { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+    button.btn {
+      padding: 9px 20px; border-radius: 8px; border: none;
+      cursor: pointer; font-size: 14px; font-weight: 600;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: #1f4fd9; }
+    .btn-ghost {
+      background: #fff; color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--bg); }
+    .btn-ghost.small { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
+    .btn-danger {
+      background: transparent; color: var(--danger);
+      border: 1px solid transparent;
+    }
+    .btn-danger:hover { background: #fdecec; }
+    .status { font-size: 13px; color: var(--success); }
+
+    /* ---------- Shared card chrome (Components + Playbook) ---------- */
+    .pb-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 12px;
+    }
+    .pb-list { display: flex; flex-direction: column; gap: 12px; }
+    .pb-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+    }
+    .pb-card.validating::after {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--primary), transparent);
+    }
+    .pb-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+    }
+    .pb-toggle {
+      appearance: none; border: none; background: transparent;
+      cursor: pointer; padding: 4px; border-radius: 6px;
+      color: var(--muted); display: flex; align-items: center; flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .pb-toggle:hover { background: var(--bg); color: var(--text); }
+    .chevron { transition: transform 0.18s; }
+    .pb-card.collapsed .chevron { transform: rotate(-90deg); }
+    .pb-meta {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .pb-name-display {
+      font-weight: 600;
+      font-size: 14px;
+      word-break: break-word;
+    }
+    .pb-name-display.placeholder {
+      color: var(--muted);
+      font-style: italic;
+      font-weight: 500;
+    }
+    .pb-desc-display {
+      color: var(--muted);
+      font-size: 12px;
+      word-break: break-word;
+    }
+    .pb-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .pb-icon-btn {
+      appearance: none; border: none; background: transparent;
+      cursor: pointer; padding: 6px; border-radius: 6px;
+      color: var(--muted); display: flex; align-items: center;
+    }
+    .pb-icon-btn:hover { background: var(--bg); color: var(--text); }
+    .pb-icon-btn.validate:hover { color: var(--primary); background: var(--primary-soft); }
+    .pb-icon-btn.delete:hover { color: var(--danger); background: #fdecec; }
+    .pb-body {
+      padding: 0 14px 14px;
+      border-top: 1px solid var(--border);
+    }
+    .pb-card.collapsed .pb-body { display: none; }
+    /* CodeMirror mounts inside this wrap. We just add the outer frame + focus ring
+       so the editor feels native to the card, and enforce a min-height. */
+    .pb-editor-wrap {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .pb-editor-wrap:focus-within {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-soft);
+    }
+    /* Let the user resize the editor vertically. */
+    .pb-editor-wrap .CodeMirror {
+      min-height: 260px;
+      height: auto;
+      resize: vertical;
+      font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+    .pb-yaml { display: none; } /* hidden; CodeMirror shows its own surface */
+    .pb-validation {
+      margin-top: 10px;
+      font-size: 12px;
+      border-radius: 8px;
+      padding: 10px 12px;
+      line-height: 1.55;
+      display: none;
+    }
+    .pb-validation.visible { display: block; }
+    .pb-validation.ok {
+      background: #eafaf2;
+      border: 1px solid #b9e7ce;
+      color: var(--success);
+      font-weight: 600;
+    }
+    .pb-validation.err {
+      background: #fdecec;
+      border: 1px solid #f6bfbf;
+      color: var(--danger);
+    }
+    .pb-validation.err li {
+      margin-left: 18px;
+    }
+    .pb-validation.warn {
+      background: #fff7e0;
+      border: 1px solid #f5dc9b;
+      color: #a87900;
+    }
+    .pb-empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 32px 0;
+      font-size: 13px;
+    }
+
+    /* CodeMirror hint dropdown decoration (rendered inside each hint <li>) */
+    .CodeMirror-hints .ac-group-lead {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: #8a9099;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 6px 10px 2px;
+      margin: -4px -4px 0;
+      border-top: 1px solid transparent;
+    }
+    /* The first group-lead should not draw top padding so it sits flush. */
+    .CodeMirror-hints li:first-child .ac-group-lead {
+      padding-top: 2px;
+      border-top: none;
+    }
+    .CodeMirror-hints .ac-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: baseline;
+    }
+    .CodeMirror-hints .ac-label {
+      font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+      font-size: 12.5px;
+    }
+    .CodeMirror-hints .ac-hint {
+      color: #8a9099;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    /* Classy up/down arrows + selected state contrast. */
+    .CodeMirror-hints li {
+      padding: 4px 10px;
+    }
+    .CodeMirror-hints li.CodeMirror-hint-active {
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+
+    /* ---------- Form tab (CSV-like table) ---------- */
+    .form-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      gap: 12px;
+    }
+    .form-toolbar .note { color: var(--muted); font-size: 12px; }
+    .form-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .form-table th,
+    .form-table td {
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: middle;
+      border-bottom: 1px solid var(--border);
+    }
+    .form-table th {
+      background: var(--code-bg);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      position: sticky;
+      top: 0;
+    }
+    .form-table tr:last-child td { border-bottom: none; }
+    .form-table tbody tr:hover td { background: var(--row-hover); }
+    .form-table tr.editing td { background: var(--row-editing); }
+    .form-table td.actions-col,
+    .form-table th.actions-col {
+      width: 120px;
+      text-align: right;
+    }
+    .form-table td.type-col,
+    .form-table th.type-col { width: 130px; }
+    .form-table td.name-col,
+    .form-table th.name-col { width: 180px; }
+    .form-cell {
+      display: flex;
+      align-items: center;
+      min-height: 28px;
+    }
+    .form-cell-value {
+      flex: 1 1 auto;
+      word-break: break-word;
+      padding: 4px 6px;
+      border-radius: 4px;
+    }
+    .form-cell input,
+    .form-cell select {
+      width: 100%;
+      padding: 4px 6px;
+      border: 1px solid var(--primary);
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .type-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--bg);
+      color: var(--muted);
+    }
+    .type-badge.string    { background: #e9f7ef; color: var(--success); }
+    .type-badge.number    { background: #eef2ff; color: var(--primary); }
+    .type-badge.reference { background: #f3ecff; color: #6f42c1; }
+    .row-actions { display: flex; justify-content: flex-end; gap: 4px; }
+    .row-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #fff;
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .row-btn.primary { background: var(--primary); color: #fff; border-color: transparent; }
+    .row-btn.primary:hover { background: #1f4fd9; }
+    .row-btn.cancel:hover { background: var(--bg); }
+    .row-btn.danger:hover { background: #fdecec; color: var(--danger); border-color: #f6bfbf; }
+    .form-empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 32px 0;
+      font-size: 13px;
+    }
+    .form-error {
+      padding: 6px 10px;
+      background: #fdecec;
+      border: 1px solid #f6bfbf;
+      color: var(--danger);
+      border-radius: 8px;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    /* ---------- Ringtones tab ---------- */
+    .ring-toolbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .ring-toolbar h2 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
+    .ring-list { display: flex; flex-direction: column; gap: 10px; }
+    .ring-item {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .ring-item-main { flex: 1; min-width: 0; }
+    .ring-item-title { font-weight: 600; font-size: 13px; }
+    .ring-item-meta { font-size: 11px; color: var(--muted); margin-top: 2px; display: flex; flex-wrap: wrap; gap: 8px; }
+    .ring-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 10px; border-radius: 999px;
+      background: var(--input-bg); border: 1px solid var(--border);
+      font-size: 11px; font-weight: 600;
+    }
+    .ring-chip.short { color: var(--success); }
+    .ring-chip.long  { color: var(--warning); }
+    .ring-actions { display: flex; align-items: center; gap: 8px; }
+    .ring-chip-play {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--input-bg); border: 1px solid var(--border);
+      padding: 4px 6px 4px 12px; border-radius: 999px; font-size: 12px;
+    }
+    .btn-mini-play {
+      width: 24px; height: 24px; border-radius: 50%;
+      border: none; background: var(--primary); color: #fff;
+      cursor: pointer; font-size: 12px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .btn-mini-play:hover { filter: brightness(1.1); }
+    .ring-empty {
+      text-align: center; padding: 36px 0;
+      color: var(--muted); font-size: 13px;
+      background: var(--card-bg); border: 1px dashed var(--border); border-radius: 10px;
+    }
+    .ref-badge {
+      background: var(--primary-soft); color: var(--primary);
+      padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700;
+    }
+
+    /* ---------- Chat Spaces rule editor ---------- */
+    .rule-editor-card {
+      background: var(--card-bg);
+      border: 2px solid var(--primary);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 18px;
+    }
+    .rule-editor-title {
+      font-size: 12px; font-weight: 700; color: var(--primary);
+      text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px;
+    }
+    .rule-form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .rule-form-grid .full { grid-column: 1 / -1; }
+    .rule-saved-list { display: flex; flex-direction: column; gap: 12px; }
+    .rule-card {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 16px;
+    }
+    .rule-card-top {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    }
+    .rule-card-main { flex: 1; min-width: 0; }
+    .rule-card-title {
+      display: flex; align-items: center; gap: 8px;
+      font-weight: 600; font-size: 13px;
+    }
+    .rule-card-meta {
+      font-size: 11px; color: var(--muted); margin-top: 4px;
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .rule-card-actions { display: flex; gap: 8px; }
+    .rule-switch-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0;
+    }
+    .rule-switch-row label { margin: 0; font-size: 13px; }
+    .rule-switch-row .hint { font-size: 11px; }
+    .switch { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .switch input { display: none; }
+    .slider-sw {
+      position: absolute; inset: 0; background: var(--muted);
+      border-radius: 20px; transition: background 0.15s; cursor: pointer;
+    }
+    .slider-sw::before {
+      position: absolute; content: "";
+      height: 14px; width: 14px; left: 3px; top: 3px;
+      background: #fff; border-radius: 50%; transition: transform 0.15s;
+    }
+    .switch input:checked + .slider-sw { background: var(--primary); }
+    .switch input:checked + .slider-sw::before { transform: translateX(16px); }
+    .rule-editor-actions {
+      margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px;
+    }
+    .saved-rules-title {
+      font-size: 11px; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.04em; margin: 6px 0 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>SRE Helper Options</h1>
+    <p class="desc">Settings, components, playbooks, and the form library are saved locally and sync to the side panel in real time.</p>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="settings">Settings</button>
+      <button class="tab" data-tab="component">Components</button>
+      <button class="tab" data-tab="playbook">Playbook</button>
+      <button class="tab" data-tab="form">Form</button>
+      <button class="tab" data-tab="ringtones">Ringtones</button>
+      <button class="tab" data-tab="chatspaces">Chat Spaces</button>
+    </div>
+
+    <!-- Settings tab -->
+    <div class="tab-content" id="tab-settings">
+      <div class="card">
+        <div class="field">
+          <label for="displayName">Display name</label>
+          <input type="text" id="displayName" placeholder="e.g. SRE" />
+          <div class="hint">Used by the side panel greeting.</div>
+        </div>
+        <div class="field">
+          <label for="refreshInterval">Refresh interval (seconds)</label>
+          <input type="number" id="refreshInterval" min="5" max="3600" step="5" />
+          <div class="hint">Auto-refresh interval, 5 ~ 3600 seconds.</div>
+        </div>
+        <div class="field">
+          <div class="toggle-row">
+            <div><label for="enableNotifications">Enable notifications</label></div>
+            <label class="switch">
+              <input type="checkbox" id="enableNotifications" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+        <div class="field">
+          <label for="theme">Theme</label>
+          <select id="theme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="apiEndpoint">API endpoint (optional)</label>
+          <input type="text" id="apiEndpoint" placeholder="https://api.example.com" />
+          <div class="hint">Used later when data fetching is added.</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" id="save">Save</button>
+          <span class="status" id="status"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Components tab (was Common) -->
+    <div class="tab-content hidden" id="tab-component">
+      <div class="pb-toolbar">
+        <button class="btn btn-primary" id="addComponent">+ Add component</button>
+      </div>
+      <div class="pb-list" id="componentList"></div>
+    </div>
+
+    <!-- Playbook tab -->
+    <div class="tab-content hidden" id="tab-playbook">
+      <div class="pb-toolbar">
+        <button class="btn btn-primary" id="addPlaybook">+ Add playbook</button>
+      </div>
+      <div class="pb-list" id="playbookList"></div>
+    </div>
+
+    <!-- Form tab -->
+    <div class="tab-content hidden" id="tab-form">
+      <div class="form-toolbar">
+        <span class="note">Click a row to edit. Fields are fixed — you may add rows but not columns. Type: <b>string</b> (any value OK), <b>number</b> / <b>reference</b> (YAML value must match the defined <code>value</code>).</span>
+        <button class="btn btn-primary" id="addFormRow">+ Add row</button>
+      </div>
+      <div id="formTableWrap"></div>
+    </div>
+
+    <!-- Ringtones tab -->
+    <div class="tab-content hidden" id="tab-ringtones">
+      <div class="ring-toolbar">
+        <div>
+          <h2>Ringtone library</h2>
+          <div class="hint">Upload mp3 / wav / ogg files. Audio is stored as base64 in <code>chrome.storage.local</code> (default 5 MB total; if you need more we can request unlimitedStorage). Use the ▶ to preview, Del to remove. A ringtone referenced by any rule can't be deleted until the rule is unlinked.</div>
+        </div>
+        <div>
+          <button class="btn btn-primary" id="addRingtoneBtn">+ Upload ringtone</button>
+          <input type="file" id="ringtoneFileInput" accept="audio/*" multiple hidden />
+        </div>
+      </div>
+      <div id="ringtonesList"></div>
+    </div>
+
+    <!-- Chat Spaces tab -->
+    <div class="tab-content hidden" id="tab-chatspaces">
+      <div class="ring-toolbar">
+        <div>
+          <h2>Space rules</h2>
+          <div class="hint">Each rule maps a Google Chat Space (by name or custom selector) to a ringtone. When new unread messages appear, the rule enters ALERTING and rings every N seconds until the Space is read or max repeats is reached.</div>
+        </div>
+        <button class="btn btn-primary" id="addChatRuleBtn">+ Add rule</button>
+      </div>
+      <div id="chatRulesEditForm"></div>
+      <div id="chatRulesList"></div>
+    </div>
+  </div>
+
+  <script src="yaml-lite.js"></script>
+  <!-- CodeMirror 5 + addons (vendored locally, MV3-compliant). -->
+  <script src="codemirror/codemirror.js"></script>
+  <script src="codemirror/mode-yaml.js"></script>
+  <script src="codemirror/show-hint.js"></script>
+  <script src="codemirror/closebrackets.js"></script>
+  <script src="codemirror/comment.js"></script>
+  <script src="codemirror/foldcode.js"></script>
+  <script src="codemirror/foldgutter.js"></script>
+  <script src="codemirror/indent-fold.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
