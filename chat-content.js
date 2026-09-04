@@ -298,13 +298,21 @@ function snapshotRuleUnread() {
     if (!rule.enabled) continue;
     let hasUnread = false;
     let count = 0;
+    const detail = [];
     for (const it of items) {
       if (ruleMatches(rule, it)) {
-        if (it.hasUnread) hasUnread = true;
+        if (it.hasUnread) {
+          hasUnread = true;
+          detail.push({
+            n: it.name,
+            u: it.unreadCount || 0,
+            t: (it.el ? it.el.innerText : "").replace(/\s+/g, " ").slice(0, 120),
+          });
+        }
         count += it.unreadCount || 0;
       }
     }
-    snapshot[rule.id] = { hasUnread, count, matchedItemCount: count };
+    snapshot[rule.id] = { hasUnread, count, detail: detail.slice(0, 3) };
   }
   return snapshot;
 }
@@ -436,14 +444,11 @@ function startRuleStateMachine(initialSnapshot) {
       since: Date.now(),
       lastAlertAt: startAlerting ? Date.now() : null,
       timer: null,
-      // Baseline unread count when this rule instance booted. Used to detect
-      // "new message arrived while an old backlog was still unread" — without
-      // this, refreshing with N unread and then receiving N+1 never fires
-      // because the trigger used to require lastUnread === 0.
-      bootCount: snap.count,
-      // True once we have observed this space fully read (count reached 0)
-      // since boot. Fresh 0→N after that is always a brand-new message.
-      seenZero: snap.count === 0,
+      // Highest unread count this tab instance has already notified about.
+      // New unread only rings when it EXCEEDS alertHigh, so a pre-existing
+      // backlog at boot is treated as already-known (alertHigh == its count)
+      // and never rings on its own. Seeing the space fully read resets it to 0.
+      alertHigh: snap.count,
     };
     ruleState.set(rule.id, st);
 
@@ -463,102 +468,96 @@ function applySnapshotsToStateMachine(snap) {
 
   for (const rule of rules) {
     if (!rule.enabled) continue;
-    const now = snap[rule.id] || { hasUnread: false, count: 0 };
-    const st = ruleState.get(rule.id) || {
-      state: "IDLE",
-      lastUnread: 0,
-      repeatCount: 0,
-      since: Date.now(),
-      timer: null,
-      bootCount: 0,
-      seenZero: true,
-    };
-    if (!ruleState.has(rule.id)) ruleState.set(rule.id, st);
+    const now = snap[rule.id] || { hasUnread: false, count: 0, detail: [] };
+    let st = ruleState.get(rule.id);
+    if (!st) {
+      st = {
+        state: "IDLE",
+        lastUnread: now.count,
+        repeatCount: 0,
+        since: Date.now(),
+        lastAlertAt: null,
+        timer: null,
+        alertHigh: now.count, // treat anything unread at wake-up as already-known
+      };
+      ruleState.set(rule.id, st);
+    }
 
     const intervalSec = Math.max(1, rule.repeatIntervalSec || 10);
     const maxR = Math.max(1, rule.maxRepeats || 20);
 
-    // While IDLE (possibly armed with a pre-existing backlog), if the space is
-    // now observed fully read, disarm: the next 0→N will always be a brand-new
-    // message regardless of how large the old backlog was.
-    if (st.state === "IDLE" && !now.hasUnread && now.count === 0) {
-      if (!st.seenZero || st.bootCount !== 0) {
-        st.seenZero = true;
-        st.bootCount = 0;
+    if (st.state === "IDLE") {
+      if (!now.hasUnread && now.count === 0) {
+        // Space fully read: disarm. The next 0→N is always a brand-new message.
+        st.alertHigh = 0;
         st.lastUnread = 0;
-      }
-    }
-
-    // Transition: IDLE → ALERTING. A rule leaves IDLE when a genuinely new
-    // message arrives relative to what this tab instance has already seen.
-    // We do NOT require lastUnread === 0 (that missed the common case where
-    // the tab was refreshed while old messages were still unread).
-    //
-    //   now.count > 0 AND any of:
-    //     (a) st.seenZero            — the space has been observed fully read
-    //                                  (or booted at 0), so any unread is new
-    //     (b) now.count > st.bootCount — grew beyond the backlog that existed
-    //                                  when this tab loaded → new message while
-    //                                  old ones were still unread
-    //     (c) st.bootCount === 0     — booted clean, any unread is new
-    if (
-      st.state === "IDLE" &&
-      now.hasUnread &&
-      now.count > 0 &&
-      (st.seenZero || now.count > st.bootCount || st.bootCount === 0)
-    ) {
-      st.state = "ALERTING";
-      st.since = Date.now();
-      st.lastAlertAt = Date.now();
-      st.repeatCount = 1;
-      stateChanged = true;
-      log("new message detected → ring: " + ruleLabel(rule));
-      // Fire-and-forget ring
-      alertRule(rule);
-      // Install per-rule repeater timer
-      if (st.timer) clearInterval(st.timer);
-      st.timer = setInterval(() => {
-        const currentSt = ruleState.get(rule.id);
-        if (!currentSt || currentSt.state !== "ALERTING") return;
-        const s = snapshotRuleUnread();
-        const cur = (s && s[rule.id]) || { hasUnread: false, count: 0 };
-        if (!cur.hasUnread) {
-          // Already read: go IDLE
-          currentSt.state = "IDLE";
-          currentSt.lastUnread = 0;
-          currentSt.repeatCount = 0;
-          currentSt.bootCount = 0;
-          currentSt.seenZero = true;
-          if (currentSt.timer) clearInterval(currentSt.timer);
-          currentSt.timer = null;
-          pushRuleStateToStorage();
-          return;
-        }
-        if (currentSt.repeatCount >= maxR) {
-          // Max repeats reached: go IDLE (stop spamming).
-          currentSt.state = "IDLE";
-          currentSt.repeatCount = 0;
-          if (currentSt.timer) clearInterval(currentSt.timer);
-          currentSt.timer = null;
-          pushRuleStateToStorage();
-          return;
-        }
-        currentSt.repeatCount += 1;
-        currentSt.lastAlertAt = Date.now();
-        pushRuleStateToStorage();
+      } else if (now.hasUnread && now.count > 0 && now.count > st.alertHigh) {
+        // Genuine unread INCREASE → enter ALERTING and ring.
+        st.state = "ALERTING";
+        st.since = Date.now();
+        st.lastAlertAt = Date.now();
+        st.repeatCount = 1;
+        st.alertHigh = now.count;
+        stateChanged = true;
+        const d = now.detail && now.detail[0];
+        log(
+          "new message detected → ring: " + ruleLabel(rule) +
+          " (count=" + now.count + ")" +
+          (d ? " culprit=" + JSON.stringify(d) : "")
+        );
         alertRule(rule);
-      }, intervalSec * 1000);
-    } else if (st.state === "ALERTING" && !now.hasUnread) {
-      // ALERTING + unread cleared → back to IDLE
-      st.state = "IDLE";
-      st.repeatCount = 0;
-      st.lastAlertAt = null;
-      st.bootCount = 0;
-      st.seenZero = true;
-      if (st.timer) clearInterval(st.timer);
-      st.timer = null;
-      stateChanged = true;
-      log("read → IDLE: " + ruleLabel(rule));
+        // Install per-rule repeater timer.
+        if (st.timer) clearInterval(st.timer);
+        st.timer = setInterval(() => {
+          const currentSt = ruleState.get(rule.id);
+          if (!currentSt || currentSt.state !== "ALERTING") return;
+          const s = snapshotRuleUnread();
+          const cur = (s && s[rule.id]) || { hasUnread: false, count: 0 };
+          if (!cur.hasUnread) {
+            // Already read: go IDLE and disarm.
+            currentSt.state = "IDLE";
+            currentSt.lastUnread = 0;
+            currentSt.repeatCount = 0;
+            currentSt.alertHigh = 0;
+            if (currentSt.timer) clearInterval(currentSt.timer);
+            currentSt.timer = null;
+            pushRuleStateToStorage();
+            return;
+          }
+          currentSt.alertHigh = Math.max(currentSt.alertHigh || 0, cur.count);
+          if (currentSt.repeatCount >= maxR) {
+            // Reached the repeat cap while still unread: go IDLE but KEEP
+            // alertHigh at the current count — the same unread state must
+            // never re-trigger. Only a further INCREASE rings again.
+            currentSt.state = "IDLE";
+            currentSt.repeatCount = 0;
+            if (currentSt.timer) clearInterval(currentSt.timer);
+            currentSt.timer = null;
+            pushRuleStateToStorage();
+            return;
+          }
+          currentSt.repeatCount += 1;
+          currentSt.lastAlertAt = Date.now();
+          pushRuleStateToStorage();
+          alertRule(rule);
+        }, intervalSec * 1000);
+      }
+      // else: hasUnread but count <= alertHigh → old/known backlog, stay silent.
+    } else if (st.state === "ALERTING") {
+      if (!now.hasUnread) {
+        // Unread cleared → back to IDLE and disarm.
+        st.state = "IDLE";
+        st.repeatCount = 0;
+        st.lastAlertAt = null;
+        st.alertHigh = 0;
+        if (st.timer) clearInterval(st.timer);
+        st.timer = null;
+        stateChanged = true;
+        log("read → IDLE: " + ruleLabel(rule));
+      } else {
+        // Still unread: keep tracking the highest count already notified.
+        st.alertHigh = Math.max(st.alertHigh || 0, now.count);
+      }
     }
 
     st.lastUnread = now.count;
