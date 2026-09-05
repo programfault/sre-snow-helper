@@ -473,6 +473,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async
   }
 
+  // Side panel adding labels: forward each picked label name to the active
+  // ServiceNow tab's content script, which simulates typing it into the page's
+  // tag-it widget (same as adding the label by hand). Active SN tab preferred,
+  // first ServiceNow tab as fallback — same targeting as snow_refresh.
+  if (msg.type === "snow_add_tags") {
+    const names = Array.isArray(msg.names)
+      ? msg.names.map((n) => String(n))
+      : [];
+    chrome.tabs.query({ url: "https://*.service-now.com/*" }, (tabs) => {
+      const list = tabs || [];
+      const target = list.find((t) => t.id === snowActiveTabId) || list[0] || null;
+      if (!target) {
+        sendResponse({
+          ok: false,
+          error: "No ServiceNow tab is open. Open the incident page and try again.",
+        });
+        return;
+      }
+      try {
+        chrome.tabs.sendMessage(
+          target.id,
+          { type: "snow_add_tags", names },
+          (resp) => {
+            if (chrome.runtime.lastError || !resp) {
+              sendResponse({
+                ok: false,
+                error:
+                  "The ServiceNow tab is not ready. Reload the incident page and try again.",
+              });
+              return;
+            }
+            sendResponse({ ok: true, result: resp.result || resp });
+          }
+        );
+      } catch (err) {
+        sendResponse({
+          ok: false,
+          error: String((err && err.message) || err),
+        });
+      }
+    });
+    return true; // async
+  }
+
   return false;
 });
 

@@ -238,4 +238,125 @@
   }
   setTimeout(poll, 300);
   setTimeout(() => report(true), 1000);
+
+  /* ---------- Tag (label) injection ---------- */
+  //
+  // Adds labels to the incident currently shown in this frame by simulating a
+  // user typing each label name into the page's tag-it widget (.tagit-new):
+  // focus → set value → input/change → Enter keydown/keypress/keyup → blur.
+  // The frame list covers both the classic UI's #gsft_main form iframe (we run
+  // inside it AND can reach same-origin iframes from the top frame) and the
+  // no-frame Next Experience shell.
+
+  function snowTagDocs() {
+    const docs = [];
+    const seen = new Set();
+    (function walk(d, depth) {
+      if (!d || seen.has(d)) return;
+      seen.add(d);
+      docs.push(d);
+      if (depth <= 0) return;
+      const frames = d.querySelectorAll("iframe");
+      for (const f of frames) {
+        try {
+          if (f.contentDocument) walk(f.contentDocument, depth - 1);
+        } catch (_) {}
+      }
+    })(document, 3);
+    return docs;
+  }
+
+  function snowFindTagInput() {
+    const sels = [
+      ".tagit-new .ui-autocomplete-input",
+      ".tagit .ui-autocomplete-input",
+      ".tagit-new input",
+    ];
+    for (const d of snowTagDocs()) {
+      for (const sel of sels) {
+        try {
+          const el = d.querySelector(sel);
+          if (el && !el.disabled && !el.readOnly) return { doc: d, input: el };
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  function snowSetInputValue(input, value) {
+    const proto =
+      input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && desc.set) desc.set.call(input, value);
+    else input.value = value;
+  }
+
+  function snowFireKey(doc, input, type) {
+    let ev = null;
+    try {
+      ev = new doc.defaultView.KeyboardEvent(type, {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      });
+    } catch (_) {
+      ev = new doc.defaultView.Event(type, { bubbles: true, cancelable: true });
+    }
+    input.dispatchEvent(ev);
+  }
+
+  async function snowAddTagsToForm(names) {
+    const found = snowFindTagInput();
+    if (!found) {
+      return { error: "No label (tag-it) input was found on this ServiceNow page." };
+    }
+    const { doc, input } = found;
+    const w = doc.defaultView || window;
+    input.focus();
+    const added = [];
+    for (const name of names) {
+      snowSetInputValue(input, name);
+      try {
+        input.dispatchEvent(new w.Event("input", { bubbles: true }));
+      } catch (_) {}
+      try {
+        input.dispatchEvent(new w.Event("change", { bubbles: true }));
+      } catch (_) {}
+      snowFireKey(doc, input, "keydown");
+      snowFireKey(doc, input, "keypress");
+      snowFireKey(doc, input, "keyup");
+      added.push(name);
+      // Let the tag-it widget run its (async) add/autocomplete before the next.
+      await new Promise((res) => setTimeout(res, 700));
+    }
+    // Flush any pending draft text and close the input.
+    snowSetInputValue(input, "");
+    try {
+      input.dispatchEvent(new w.Event("input", { bubbles: true }));
+    } catch (_) {}
+    input.blur();
+    return { added };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg || msg.type !== "snow_add_tags") return false;
+    const names = Array.isArray(msg.names)
+      ? msg.names.map((n) => String(n).trim()).filter(Boolean)
+      : [];
+    if (names.length === 0) {
+      sendResponse({ ok: false, error: "No label names supplied." });
+      return false;
+    }
+    snowAddTagsToForm(names)
+      .then((res) => sendResponse({ ok: true, result: res }))
+      .catch((err) =>
+        sendResponse({ ok: false, error: String((err && err.message) || err) })
+      );
+    return true; // async
+  });
 })();
