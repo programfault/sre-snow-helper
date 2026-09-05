@@ -425,6 +425,88 @@ function snowMergeReport(tabId, ctx) {
   snowBroadcast();
 }
 
+/* ---------- goble.com order-page context broker ---------- */
+//
+// goble-content.js reports the order fields visible on the current goble.com
+// page (fwo = OrderNumber, fsid = serviceid, factok = accesstoken). Pages that
+// cannot extract a field report it as "" so a plain page clears stale values.
+// This broker mirrors the ServiceNow one: merge per tab, prefer the ACTIVE
+// goble tab, broadcast the best snapshot to the side panel as "goble_ctx".
+// The side panel exposes the fields as the global ${f_wo_number} / ${f_sid} /
+// ${f_access_token} variables, usable from any YAML document.
+const gobleByTab = new Map(); // tabId -> merged ctx
+let gobleActiveTabId = null;
+
+function gobleHostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (_) {
+    return "";
+  }
+}
+
+function isGobleUrl(url) {
+  const h = gobleHostOf(String(url || ""));
+  return h === "goble.com" || h.endsWith(".goble.com");
+}
+
+function gobleFields(entry) {
+  if (!entry) return null;
+  const snap = {
+    fwo: entry.fwo || null,
+    fsid: entry.fsid || null,
+    factok: entry.factok || null,
+  };
+  return snap.fwo || snap.fsid || snap.factok ? snap : null;
+}
+
+function gobleSame(a, b) {
+  return JSON.stringify(gobleFields(a)) === JSON.stringify(gobleFields(b));
+}
+
+function goblePickBest() {
+  let best = null;
+  if (gobleActiveTabId != null && gobleByTab.has(gobleActiveTabId)) {
+    best = gobleByTab.get(gobleActiveTabId);
+  }
+  if (!best) {
+    // Most recent across all tabs.
+    for (const entry of gobleByTab.values()) {
+      if (!best || entry.at > best.at) best = entry;
+    }
+  }
+  return gobleFields(best);
+}
+
+let gobleLastBroadcast = null;
+function gobleBroadcast() {
+  const best = goblePickBest();
+  if (gobleSame(gobleLastBroadcast, best)) return;
+  gobleLastBroadcast = best;
+  try {
+    chrome.runtime
+      .sendMessage({ type: "goble_ctx", ctx: best })
+      .catch(() => {});
+  } catch (_) {}
+}
+
+function gobleMergeReport(tabId, ctx) {
+  if (!ctx || typeof ctx !== "object") return;
+  const prev = gobleByTab.get(tabId) || {};
+  const merged = {
+    url: ctx.url || prev.url || "",
+    at: ctx.at || Date.now(),
+    // Content script always sends the three keys (possibly ""); overwrite so a
+    // goble page that shows no field clears the earlier captured value.
+    fwo: ctx.fwo !== undefined ? ctx.fwo : prev.fwo || "",
+    fsid: ctx.fsid !== undefined ? ctx.fsid : prev.fsid || "",
+    factok: ctx.factok !== undefined ? ctx.factok : prev.factok || "",
+  };
+  gobleByTab.set(tabId, merged);
+  gobleBroadcast();
+}
+
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return false;
 
@@ -432,6 +514,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "snow_probe") {
     const tabId = sender && sender.tab ? sender.tab.id : null;
     if (tabId != null) snowMergeReport(tabId, msg.ctx);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  // Content script (goble-content.js) reporting an order-page snapshot.
+  if (msg.type === "goble_probe") {
+    const tabId = sender && sender.tab ? sender.tab.id : null;
+    if (tabId != null) gobleMergeReport(tabId, msg.ctx);
     sendResponse({ ok: true });
     return false;
   }
@@ -447,6 +537,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (_) {}
       setTimeout(() => {
         sendResponse({ ok: true, ctx: snowPickBest() });
+      }, 650);
+      return true; // async
+    }
+    sendResponse({ ok: true, ctx: best });
+    return false;
+  }
+
+  // goble.com twin of snow_get_current.
+  if (msg.type === "goble_get_current") {
+    let best = goblePickBest();
+    if (!best && gobleActiveTabId != null) {
+      try {
+        chrome.tabs.sendMessage(gobleActiveTabId, { type: "goble_request_probe" });
+      } catch (_) {}
+      setTimeout(() => {
+        sendResponse({ ok: true, ctx: goblePickBest() });
       }, 650);
       return true; // async
     }
@@ -470,6 +576,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, ctx: snowPickBest() });
       }, target ? 800 : 0);
     });
+    return true; // async
+  }
+
+  // goble.com twin of snow_refresh.
+  if (msg.type === "goble_refresh") {
+    chrome.tabs.query(
+      { url: ["*://goble.com/*", "*://*.goble.com/*"] },
+      (tabs) => {
+        const list = tabs || [];
+        const target =
+          list.find((t) => t.id === gobleActiveTabId) || list[0] || null;
+        if (target) {
+          try {
+            chrome.tabs.sendMessage(target.id, { type: "goble_request_probe" });
+          } catch (_) {}
+        }
+        setTimeout(() => {
+          sendResponse({ ok: true, ctx: goblePickBest() });
+        }, target ? 800 : 0);
+      }
+    );
     return true; // async
   }
 
@@ -522,6 +649,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.tabs.onActivated.addListener((info) => {
   snowActiveTabId = info.tabId;
+  gobleActiveTabId = info.tabId;
   // If the newly focused tab is a ServiceNow tab, ask it to refresh so the
   // side panel Info row follows what the user is actually looking at.
   try {
@@ -535,12 +663,21 @@ chrome.tabs.onActivated.addListener((info) => {
           chrome.tabs.sendMessage(info.tabId, { type: "snow_request_probe" });
         } catch (_) {}
       }
+      // Same for a goble.com order page (goble globals track it live).
+      if (isGobleUrl(url)) {
+        try {
+          chrome.tabs.sendMessage(info.tabId, { type: "goble_request_probe" });
+        } catch (_) {}
+      }
     });
   } catch (_) {}
   snowBroadcast();
+  gobleBroadcast();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (snowByTab.delete(tabId)) snowBroadcast();
   if (snowActiveTabId === tabId) snowActiveTabId = null;
+  if (gobleByTab.delete(tabId)) gobleBroadcast();
+  if (gobleActiveTabId === tabId) gobleActiveTabId = null;
 });

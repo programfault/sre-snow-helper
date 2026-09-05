@@ -24,13 +24,23 @@ const openOptionsBtn = document.getElementById("openOptions");
 // and kept fresh by the "snow_ctx" broadcasts below.
 let snowCtx = null;
 
-// Variable names that are satisfied from the incident context instead of a
-// user prompt: ${number}, ${userToken}, ${incidentId} (= sys_id), ${instance}.
+// goble.com order-page context — same shape as snowCtx but captured from the
+// goble.com page the user is looking at (see goble-content.js). Populated on
+// load and kept fresh by the "goble_ctx" broadcasts below.
+let gobleCtx = null;
+
+// Global context variables that are satisfied automatically instead of being
+// prompted as user inputs. They resolve from the page snapshots above and can
+// be referenced from any YAML document (playbooks, common steps, services):
+//   ${number} / ${userToken} / ${incidentId} / ${instance}   ← ServiceNow page
+//   ${f_wo_number} / ${f_sid} / ${f_access_token}            ← goble.com page
 const SN_CTX_VARS = new Set(["number", "userToken", "incidentId", "instance"]);
+const GOB_CTX_VARS = new Set(["f_wo_number", "f_sid", "f_access_token"]);
+const CTX_VARS = new Set([...SN_CTX_VARS, ...GOB_CTX_VARS]);
 
 // Map only the context fields that are actually present. Omitting an empty
 // field leaves its ${placeholder} unresolved, so callers can surface a clear
-// "open an incident first" error instead of silently sending an empty string.
+// "open a page first" error instead of silently sending an empty string.
 function snowVars() {
   const c = snowCtx || {};
   const out = {};
@@ -41,34 +51,63 @@ function snowVars() {
   return out;
 }
 
-/* ---------- ServiceNow incident Info panel ---------- */
-//
-// Non-collapsible summary of the incident the user is currently looking at.
-// It mirrors the context broker's best snapshot (active ServiceNow tab, else
-// the most recently touched one) so users can read / copy Number, the CSRF
-// UserToken (window.g_ck) and the record sys_id before executing a flow.
-// The same snapshot feeds ${incidentId} / ${userToken} / ${number} /
-// ${instance} placeholders and signs real PATCH requests.
+function gobleVars() {
+  const g = gobleCtx || {};
+  const out = {};
+  if (g.fwo) out.f_wo_number = String(g.fwo);
+  if (g.fsid) out.f_sid = String(g.fsid);
+  if (g.factok) out.f_access_token = String(g.factok);
+  return out;
+}
 
-const SN_INFO_FIELDS = [
-  { key: "number", label: "Number" },
-  { key: "token", label: "UserToken" },
-  { key: "sysid", label: "IncidentID" },
+/* ---------- Base Info panel ---------- */
+//
+// Non-collapsible summary of the context the user is currently looking at:
+// the ServiceNow incident snapshot plus the goble.com order-page snapshot,
+// both mirroring the context broker's best choice (active tab, else the most
+// recently touched one). Rows let users read / copy values before executing a
+// flow. The same snapshots feed the ${number} / ${userToken} / ${incidentId} /
+// ${instance} (ServiceNow) and ${f_wo_number} / ${f_sid} / ${f_access_token}
+// (goble.com) placeholders, and the ServiceNow one signs real PATCH requests.
+//
+// Labels are display-only text — renaming one never affects the underlying
+// placeholder (`gvar`), which is what YAML authors actually reference.
+
+const BASE_INFO_FIELDS = [
+  { key: "number", src: "snow", label: "incident", gvar: "number" },
+  { key: "token", src: "snow", label: "servicetoken", gvar: "userToken" },
+  { key: "sysid", src: "snow", label: "formid", gvar: "incidentId" },
+  { key: "fwo", src: "goble", label: "OrderNumber", gvar: "f_wo_number" },
+  { key: "fsid", src: "goble", label: "serviceid", gvar: "f_sid" },
+  { key: "factok", src: "goble", label: "accesstoken", gvar: "f_access_token" },
 ];
 
-// Long values (CSRF tokens) are truncated to keep each row on one tidy line;
-// the full value is always what gets copied and shown in the title tooltip.
-const SN_INFO_MAX = { number: 40, token: 26, sysid: 40 };
-function snowDisplayValue(raw, key) {
+// Snapshot that backs one row: "snow" → snowCtx, "goble" → gobleCtx.
+function baseCtxFor(src) {
+  return src === "goble" ? gobleCtx : snowCtx;
+}
+
+// Long values (tokens / sys_ids / service ids) are truncated to keep each row
+// on one tidy line; the full value is always what gets copied and shown in the
+// title tooltip.
+const BASE_INFO_MAX = {
+  number: 40,
+  token: 26,
+  sysid: 40,
+  fwo: 40,
+  fsid: 40,
+  factok: 26,
+};
+function baseDisplayValue(raw, key) {
   const s = raw ? String(raw) : "";
-  const max = SN_INFO_MAX[key] || 40;
+  const max = BASE_INFO_MAX[key] || 40;
   if (s.length <= max) return s;
   const mid = max - 1;
   const head = Math.ceil(mid / 2);
   return s.slice(0, head) + "…" + s.slice(s.length - (mid - head));
 }
 
-let snowInfoRoot = null; // the currently mounted Info panel (rebuilds on re-render)
+let baseInfoRoot = null; // the currently mounted Base Info panel (rebuilds on re-render)
 
 function copyToClipboard(text) {
   if (!text) return Promise.resolve(false);
@@ -98,65 +137,102 @@ function legacyCopy(text) {
   return ok;
 }
 
-// Ask the background broker for the freshest incident snapshot and refresh the
-// Info panel once it answers.
+// Ask the background broker for the freshest ServiceNow incident snapshot and
+// refresh the Base Info panel once it answers.
 function refreshSnowContext() {
   try {
     chrome.runtime.sendMessage({ type: "snow_get_current" }, (resp) => {
       if (chrome.runtime.lastError) return;
       if (resp && resp.ctx) {
         snowCtx = resp.ctx;
-        snowRefreshInfo();
+        refreshBaseInfo();
       }
     });
   } catch (_) {}
 }
 
-// Manual refresh (Info panel refresh button): ask background to force a live
-// ServiceNow tab to re-probe instead of returning a possibly stale snapshot.
-function snowManualRefresh(btn) {
-  btn.classList.add("busy");
+// Same, for the goble.com order-page snapshot.
+function refreshGobleContext() {
   try {
-    chrome.runtime.sendMessage({ type: "snow_refresh" }, (resp) => {
-      btn.classList.remove("busy");
+    chrome.runtime.sendMessage({ type: "goble_get_current" }, (resp) => {
       if (chrome.runtime.lastError) return;
       if (resp && resp.ctx) {
-        snowCtx = resp.ctx;
-        snowRefreshInfo();
-        // The Incident Info refresh doubles as the label-list refresh: re-fetch
-        // the picker's candidates whenever the incident snapshot is refreshed.
-        refreshSnowLabelCache();
-        const has = resp.ctx.token || resp.ctx.sysid || resp.ctx.number;
-        if (!has) {
-          toast.error(
-            "Refresh",
-            "No ServiceNow incident captured. Open an incident page and try again."
-          );
-        }
-      } else {
-        toast.error(
-          "Refresh",
-          "No ServiceNow incident captured. Open an incident page and try again."
-        );
+        gobleCtx = resp.ctx;
+        refreshBaseInfo();
       }
     });
-  } catch (_) {
+  } catch (_) {}
+}
+
+// Manual refresh (Base Info refresh button): ask background to force the live
+// ServiceNow and goble.com tabs to re-probe instead of returning possibly
+// stale snapshots. Both probes run in parallel; the button spins until both
+// settle, and a single toast fires only when neither source captured anything.
+function baseManualRefresh(btn) {
+  btn.classList.add("busy");
+  let pending = 2;
+  let foundAny = false;
+  const settle = () => {
+    pending -= 1;
+    if (pending > 0) return;
     btn.classList.remove("busy");
+    if (!foundAny) {
+      toast.error(
+        "Refresh",
+        "Nothing captured. Open a ServiceNow incident or a goble.com order page and try again."
+      );
+    }
+  };
+  try {
+    chrome.runtime.sendMessage({ type: "snow_refresh" }, (resp) => {
+      const ctx = !chrome.runtime.lastError && resp && resp.ctx ? resp.ctx : null;
+      if (ctx) {
+        snowCtx = ctx;
+        refreshBaseInfo();
+        if (ctx.token || ctx.sysid || ctx.number) {
+          foundAny = true;
+          // Doubles as the label-list refresh: re-fetch the picker's
+          // candidates whenever the ServiceNow snapshot refreshes.
+          refreshSnowLabelCache();
+        }
+      }
+      settle();
+    });
+  } catch (_) {
+    settle();
+  }
+  try {
+    chrome.runtime.sendMessage({ type: "goble_refresh" }, (resp) => {
+      const ctx = !chrome.runtime.lastError && resp && resp.ctx ? resp.ctx : null;
+      if (ctx) {
+        gobleCtx = ctx;
+        refreshBaseInfo();
+        if (ctx.fwo || ctx.fsid || ctx.factok) foundAny = true;
+      }
+      settle();
+    });
+  } catch (_) {
+    settle();
   }
 }
 
-// Broadcasts from background.js keep the snapshot current while the user
-// switches between ServiceNow tabs / records.
+// Broadcasts from background.js keep both snapshots current while the user
+// switches between ServiceNow / goble.com tabs or records.
 chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg || msg.type !== "snow_ctx") return;
-  snowCtx = msg.ctx || null;
-  snowRefreshInfo();
+  if (!msg) return;
+  if (msg.type === "snow_ctx") {
+    snowCtx = msg.ctx || null;
+    refreshBaseInfo();
+  } else if (msg.type === "goble_ctx") {
+    gobleCtx = msg.ctx || null;
+    refreshBaseInfo();
+  }
 });
 
-function renderSnowInfoPanel() {
+function renderBaseInfoPanel() {
   const root = document.createElement("div");
   root.className = "snow-info";
-  snowInfoRoot = root;
+  baseInfoRoot = root;
 
   const head = document.createElement("div");
   head.className = "snow-info-head";
@@ -166,15 +242,15 @@ function renderSnowInfoPanel() {
     '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>';
   const title = document.createElement("span");
   title.className = "snow-info-title";
-  title.textContent = "Incident Info";
+  title.textContent = "Base Info";
 
   const refresh = document.createElement("button");
   refresh.type = "button";
   refresh.className = "snow-refresh-btn";
-  refresh.title = "Refresh incident info";
+  refresh.title = "Refresh captured context";
   refresh.innerHTML =
     '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
-  refresh.addEventListener("click", () => snowManualRefresh(refresh));
+  refresh.addEventListener("click", () => baseManualRefresh(refresh));
 
   head.appendChild(icon);
   head.appendChild(title);
@@ -184,19 +260,28 @@ function renderSnowInfoPanel() {
   const hint = document.createElement("div");
   hint.className = "snow-info-hint";
   hint.textContent =
-    "Open an incident in ServiceNow to capture Number, UserToken and IncidentID automatically.";
+    "Open a ServiceNow incident or a goble.com order page — values capture automatically.";
   root.appendChild(hint);
 
   const rows = document.createElement("div");
   rows.className = "snow-info-rows";
-  SN_INFO_FIELDS.forEach((f) => {
+  BASE_INFO_FIELDS.forEach((f) => {
     const row = document.createElement("div");
     row.className = "snow-info-row";
     row.dataset.field = f.key;
 
     const label = document.createElement("span");
     label.className = "snow-info-label";
-    label.textContent = f.label;
+    const labelText = document.createElement("span");
+    labelText.className = "snow-info-label-text";
+    labelText.textContent = f.label;
+    // Referenceable global variable, shown under the label so authors know
+    // ${gvar} can be used from any playbook / common step / service YAML.
+    const labelVar = document.createElement("span");
+    labelVar.className = "snow-info-label-var";
+    labelVar.textContent = "${" + f.gvar + "}";
+    label.appendChild(labelText);
+    label.appendChild(labelVar);
 
     const value = document.createElement("span");
     value.className = "snow-info-value";
@@ -209,7 +294,8 @@ function renderSnowInfoPanel() {
     copy.innerHTML =
       '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
     copy.addEventListener("click", () => {
-      const val = (snowCtx && snowCtx[f.key]) || "";
+      const ctx = baseCtxFor(f.src) || {};
+      const val = ctx[f.key];
       if (!val) return;
       copyToClipboard(String(val)).then((ok) => {
         if (!ok) {
@@ -232,42 +318,41 @@ function renderSnowInfoPanel() {
   });
   root.appendChild(rows);
 
-  // Labels picker: sits inside the Incident Info card right below the
-  // IncidentID row, sharing the card's refresh button (see snowManualRefresh).
+  // Labels picker: sits inside the Base Info card right below the formid row,
+  // sharing the card's refresh button (see baseManualRefresh).
   root.appendChild(buildSnowTagSection());
 
   return root;
 }
 
-// Update the mounted Info panel's values from the current snapshot without
+// Update the mounted Base Info panel's values from both snapshots without
 // rebuilding the whole panel (so the rest of the UI is left untouched).
-function snowRefreshInfo() {
-  if (!snowInfoRoot || !snowInfoRoot.isConnected) return;
-  const c = snowCtx || {};
-  const rowEls = snowInfoRoot.querySelectorAll(".snow-info-row");
-  SN_INFO_FIELDS.forEach((f, i) => {
+function refreshBaseInfo() {
+  if (!baseInfoRoot || !baseInfoRoot.isConnected) return;
+  const rowEls = baseInfoRoot.querySelectorAll(".snow-info-row");
+  BASE_INFO_FIELDS.forEach((f, i) => {
     const row = rowEls[i];
     if (!row) return;
-    const raw = c[f.key];
+    const raw = (baseCtxFor(f.src) || {})[f.key];
     const text = raw ? String(raw) : "";
     const valueEl = row.querySelector(".snow-info-value");
     const copyEl = row.querySelector(".snow-copy-btn");
     if (valueEl) {
-      valueEl.textContent = text ? snowDisplayValue(text, f.key) : "—";
+      valueEl.textContent = text ? baseDisplayValue(text, f.key) : "—";
       valueEl.classList.toggle("empty", !text);
       valueEl.title = text; // full value on hover
     }
     if (copyEl) copyEl.classList.toggle("disabled", !text);
   });
-  const hint = snowInfoRoot.querySelector(".snow-info-hint");
-  const hasAny = SN_INFO_FIELDS.some((f) => c[f.key]);
+  const hint = baseInfoRoot.querySelector(".snow-info-hint");
+  const hasAny = BASE_INFO_FIELDS.some((f) => (baseCtxFor(f.src) || {})[f.key]);
   if (hint) hint.classList.toggle("hidden", hasAny);
   snowTagCtxTick();
 }
 
 /* ---------- ServiceNow Labels (tag) picker ---------- */
 //
-// Rendered inside the Incident Info panel, right under the IncidentID row.
+// Rendered inside the Base Info panel, right under the formid row.
 // Two moving parts:
 //   * input/dropdown — auto-suggest / filter over the cached label list of the
 //                current instance; picked labels become chips (multi-select).
@@ -275,7 +360,7 @@ function snowRefreshInfo() {
 //                asking the active ServiceNow tab's content script to simulate
 //                typing each name into the page's tag-it control.
 // The label list is cached under chrome.storage.local key sreSnowLabels after
-// a fetch; that fetch is driven by the Incident Info refresh button (the only
+// a fetch; that fetch is driven by the Base Info refresh button (the only
 // path that re-hits ServiceNow).
 
 const SN_LABEL_GROUP = "bcd9d8ac47243a1831c140d4116d43e5"; // fixed group filter from the original script
@@ -397,7 +482,7 @@ async function snowFetchLabels() {
 }
 
 // Re-fetch the label list for the captured instance and repaint the picker.
-// Called by the Incident Info refresh button (the picker no longer owns a
+// Called by the Base Info refresh button (the picker no longer owns a
 // refresh control of its own). No-op while no instance/token is captured.
 function refreshSnowLabelCache() {
   const c = snowCtx || {};
@@ -570,7 +655,7 @@ function buildSnowTagSection() {
     addBtn.disabled = busy || !(snowCtx && snowCtx.instance) || snowTagSelected.size === 0;
   };
 
-  // Exposed to the Incident Info refresh button so it can repaint the picker
+  // Exposed to the Base Info refresh button so it can repaint the picker
   // after a label cache refresh. repaintDrop is gated, so this never pops the
   // dropdown open on its own.
   snowTagApi = {
@@ -969,15 +1054,15 @@ function render(data) {
     return;
   }
 
-  // The incident Info panel is non-collapsible and sits directly above the
+  // The Base Info panel is non-collapsible and sits directly above the
   // ServiceNow flows panel (or the Services panel when no flows exist).
-  let snowInfoShown = false;
-  const appendSnowInfo = () => {
-    if (!snowInfoShown) {
-      const root = renderSnowInfoPanel();
+  let baseInfoShown = false;
+  const appendBaseInfo = () => {
+    if (!baseInfoShown) {
+      const root = renderBaseInfoPanel();
       contentEl.appendChild(root);
-      snowInfoShown = true;
-      snowRefreshInfo(); // render current snapshot once the panel is mounted
+      baseInfoShown = true;
+      refreshBaseInfo(); // render current snapshots once the panel is mounted
     }
   };
 
@@ -1016,14 +1101,14 @@ function render(data) {
 
     mega.appendChild(megaHeader);
     mega.appendChild(megaBody);
-    appendSnowInfo();
+    appendBaseInfo();
     contentEl.appendChild(mega);
     snowTagCtxTick();
   }
 
   // 3) Services mega panel (runs below Playbooks).
   if (services.length > 0) {
-    appendSnowInfo();
+    appendBaseInfo();
     contentEl.appendChild(renderServicesPanel(services));
   }
 }
@@ -1507,10 +1592,11 @@ function renderServiceStepRow(svc, idx) {
 
 // Perform one HTTP call. Returns { failed, status?, error?, url?, out }.
 async function runServiceStep(svc, values) {
-  // Context placeholders (${incidentId}, ${userToken}, ${number}, ${instance})
-  // resolve from the ServiceNow incident snapshot. Explicit service inputs win
-  // over context on a name clash.
-  const effective = Object.assign({}, snowVars(), values || {});
+  // Context placeholders from both snapshots resolve automatically: ServiceNow
+  // (${incidentId}, ${userToken}, ${number}, ${instance}) and goble.com order
+  // page (${f_wo_number}, ${f_sid}, ${f_access_token}). Explicit service
+  // inputs win over context on a name clash.
+  const effective = Object.assign({}, snowVars(), gobleVars(), values || {});
   const url = Y.resolvePlaceholders(svc.endpoint, effective);
   const headers = {};
   const rawHeaders = Y.resolveTemplate(svc.header || {}, effective);
@@ -1530,7 +1616,7 @@ async function runServiceStep(svc, values) {
   if (leftOver.length > 0) {
     return {
       failed: true,
-      error: "missing value(s): " + leftOver.map((n) => "${" + n + "}").join(", "),
+      error: describeMissingPlaceholders(leftOver, "in the service inputs"),
     };
   }
 
@@ -1580,6 +1666,24 @@ function collectUnresolved(values) {
   };
   values.forEach(walk);
   return Array.from(found);
+}
+
+// Human-readable reason for ${…} names that survived resolution. Context
+// placeholders are split by source so the hint tells the user which page to
+// open (ServiceNow incident vs goble.com order page) instead of asking them to
+// fill in a value that is meant to be captured automatically.
+function describeMissingPlaceholders(names, inputsLabel) {
+  const fmt = (arr) => arr.map((n) => "${" + n + "}").join(", ");
+  const inputs = names.filter((n) => !CTX_VARS.has(n));
+  const snow = names.filter((n) => SN_CTX_VARS.has(n));
+  const goble = names.filter((n) => GOB_CTX_VARS.has(n));
+  const msgs = [];
+  if (inputs.length) msgs.push("fill in " + fmt(inputs) + " " + inputsLabel);
+  if (snow.length)
+    msgs.push("open an incident in ServiceNow so " + fmt(snow) + " can be captured");
+  if (goble.length)
+    msgs.push("open an order page on goble.com so " + fmt(goble) + " can be captured");
+  return "missing value(s): " + msgs.join("; ");
 }
 
 async function executeServiceCard(card, steps, inputs, runBtn) {
@@ -1800,9 +1904,11 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
     if (v !== null) commonValues["param" + idx] = v;
   });
 
-  // Incident context satisfies ${incidentId} / ${userToken} / ${number} /
-  // ${instance}; explicit parameter values keep their normal keys.
-  const ctxVars = snowVars();
+  // Page context satisfies both placeholder families automatically — ServiceNow
+  // (${incidentId} / ${userToken} / ${number} / ${instance}) and goble.com
+  // (${f_wo_number} / ${f_sid} / ${f_access_token}); explicit parameter values
+  // keep their normal keys.
+  const ctxVars = Object.assign({}, snowVars(), gobleVars());
   const pbResolve = Object.assign({}, ctxVars, pbValues);
   const commonResolve = Object.assign({}, ctxVars, commonValues);
 
@@ -1824,22 +1930,11 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
   const finishUnit = (idx, displayName, refName, formMap, actionVal) => {
     const leftover = collectUnresolved([formMap]);
     if (leftover.length > 0) {
-      const params = leftover.filter((n) => !SN_CTX_VARS.has(n));
-      const ctx = leftover.filter((n) => SN_CTX_VARS.has(n));
-      const msgs = [];
-      if (params.length) {
-        msgs.push(
-          "fill in " + params.map((n) => "${" + n + "}").join(", ") + " in the Parameters form"
-        );
-      }
-      if (ctx.length) {
-        msgs.push(
-          "open an incident in ServiceNow so " +
-            ctx.map((n) => "${" + n + "}").join(", ") +
-            " can be captured"
-        );
-      }
-      return { idx, name: displayName, error: "missing value(s): " + msgs.join("; ") };
+      return {
+        idx,
+        name: displayName,
+        error: describeMissingPlaceholders(leftover, "in the Parameters form"),
+      };
     }
     mirrorComments(formMap);
     return { idx, name: displayName, ref: refName, form: formMap, action: actionVal };
@@ -1996,6 +2091,7 @@ function cssEscape(s) {
 loadState((data) => {
   render(data);
   refreshSnowContext();
+  refreshGobleContext();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

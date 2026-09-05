@@ -7,6 +7,8 @@
   "host_permissions": [
     "*://chat.google.com/*",
     "https://*.service-now.com/*",
+    "*://goble.com/*",
+    "*://*.goble.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -25,6 +27,12 @@
       "js": ["snow-content.js"],
       "run_at": "document_idle",
       "all_frames": true
+    },
+    {
+      "matches": ["*://goble.com/*", "*://*.goble.com/*"],
+      "js": ["goble-content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {
