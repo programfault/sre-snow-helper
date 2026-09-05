@@ -1295,6 +1295,16 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
   // common step's value; else false). A payload still containing ${…} after
   // resolution is an error — it must never reach ServiceNow literally.
   const commonSteps = (common && common.steps) || {};
+  // Practical shortcut: comments and work_notes are virtually always kept in
+  // sync, so whenever a payload sends work_notes we mirror the same value into
+  // comments automatically. Authors only define work_notes (and its
+  // placeholder) once — no separate comments field/handling is needed.
+  const mirrorComments = (form) => {
+    if (form && typeof form.work_notes === "string" && form.work_notes.length > 0) {
+      form.comments = form.work_notes;
+    }
+    return form;
+  };
   const finishUnit = (idx, displayName, refName, formMap, actionVal) => {
     const leftover = collectUnresolved([formMap]);
     if (leftover.length > 0) {
@@ -1315,6 +1325,7 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
       }
       return { idx, name: displayName, error: "missing value(s): " + msgs.join("; ") };
     }
+    mirrorComments(formMap);
     return { idx, name: displayName, ref: refName, form: formMap, action: actionVal };
   };
 
@@ -1383,6 +1394,7 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
     if (merged.length > 0) {
       const combined = {};
       merged.forEach((u) => Object.assign(combined, u.form));
+      mirrorComments(combined);
       const positions = merged.map((u) => u.idx + 1).join(", ");
       toast.info(`Dry run · Steps ${positions} merged → single PATCH`, JSON.stringify(combined, null, 2));
     }
@@ -1427,6 +1439,7 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
     if (merged.length > 0) {
       const combined = {};
       merged.forEach((u) => Object.assign(combined, u.form));
+      mirrorComments(combined);
       const positions = merged.map((u) => u.idx + 1).join(", ");
       const t = `Steps ${positions} merged`;
       const r = await snowPatchIncident(combined, endpoint);
