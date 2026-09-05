@@ -1623,7 +1623,8 @@ async function executeServiceCard(card, steps, inputs, runBtn) {
 //   toast.error(title, body)  — red
 // `body` is optional; when provided it renders in a monospace block (useful
 // for JSON / debug output). Toasts auto-dismiss after `duration` ms (default
-// 4000). Multiple toasts stack vertically in the bottom-right corner.
+// 4000) and can be closed manually via the × button in the header.
+// Multiple toasts stack vertically in the bottom-right corner.
 
 const toast = (() => {
   let container = null;
@@ -1643,7 +1644,26 @@ const toast = (() => {
 
     const head = document.createElement("div");
     head.className = "toast-head";
-    head.textContent = title;
+
+    const titleEl = document.createElement("span");
+    titleEl.className = "toast-title";
+    titleEl.textContent = title;
+    head.appendChild(titleEl);
+
+    // Manual close: lets the user dismiss a toast immediately instead of
+    // waiting for the auto-dismiss countdown to finish.
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "toast-close";
+    closeBtn.title = "Close";
+    closeBtn.setAttribute("aria-label", "Close notification");
+    closeBtn.textContent = "\u00d7";
+    closeBtn.addEventListener("click", () => {
+      clearTimeout(timer);
+      dismiss(el);
+    });
+    head.appendChild(closeBtn);
+
     el.appendChild(head);
 
     if (body !== undefined && body !== null && String(body).length > 0) {
