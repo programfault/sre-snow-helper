@@ -1464,7 +1464,10 @@ function renderServicesPanel(services) {
 function renderServiceCard(item, idx) {
   const isGroup = item.type === "group";
   const steps = isGroup ? item.services || [] : [item];
-  const inputs = Y.collectServiceInputs(item);
+  // Manual inputs only: ${name}s that name a captured global (ServiceNow ctx
+  // or globe.com.ph order page) resolve automatically at run time and must NOT
+  // be prompted here — an empty input would shadow the captured value.
+  const inputs = Y.collectServiceInputs(item).filter((inp) => !CTX_VARS.has(inp.var));
 
   const card = document.createElement("div");
   card.className = "pb-card svc-card";
