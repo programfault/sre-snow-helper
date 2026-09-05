@@ -123,9 +123,11 @@ body {
 }
 
 /* Content panels span edge to edge, matching the Base Info strip above.
-   A bottom rule separates stacked panels; internals keep their own chrome. */
+   A bottom rule separates stacked panels; internals keep their own chrome.
+   flex-shrink: 0 keeps tall panels from being squashed — the container scrolls. */
 .content > .mega-panel,
 .content > .snow-info.snow-info-tags {
+  flex-shrink: 0;
   border: none;
   border-radius: 0;
   border-bottom: 1px solid var(--border);
