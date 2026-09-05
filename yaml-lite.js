@@ -155,9 +155,10 @@
 
   // Parse a `params:` block from the top of a document (common doc or playbook).
   // Each entry: { name, type? } — `type` only steers front-end rendering:
-  //   type: textarea => a multi-line <textarea>; anything else (or omitted)
-  //   => a single-line <input type="text">. Params are referenced by index:
-  //   ${param0}, ${param1}, ...
+  //   type: textarea => a multi-line <textarea>; type: option => a radio group
+  //   whose choices come from the Form library (see paramOptionRows below);
+  //   anything else (or omitted) => a single-line <input type="text">.
+  // Params are referenced by index: ${param0}, ${param1}, ...
   // Returns [] when no params block.
   function parseParams(yaml) {
     const params = [];
@@ -199,6 +200,63 @@
     }
     if (cur) params.push(cur);
     return params.filter((p) => p.name);
+  }
+
+  // Resolve the choices behind an `option`-typed param from the Form library.
+  // The param's `name` is looked up as the human `label` of a field first (e.g.
+  // a param named "Configuration item" finds the u_substate field whose rows
+  // carry that label); if nothing matches, it falls back to the field `name`
+  // itself. Every candidate choice renders with its `display` text (falling
+  // back to the raw value) and, once selected, fills the row's `value`. The
+  // first choice is the default selection. Returns [] when no usable row is
+  // found — callers should fall back to free text.
+  function paramOptionRows(param, forms) {
+    const src = Array.isArray(forms) ? forms : [];
+    const want = param && param.name ? String(param.name).trim() : "";
+    if (!want) return [];
+    const byLabel = src.filter(
+      (r) => r && r.label && String(r.label).trim() === want
+    );
+    // Prefer the field reached via its label; otherwise allow matching the raw
+    // field key directly. Either way all rows of the resolved field participate
+    // (they share the field's candidate set regardless of per-row labels).
+    const fieldName = byLabel.length
+      ? byLabel[0].name
+      : (src.find((r) => r && r.name && String(r.name).trim() === want) || {}).name;
+    if (!fieldName) return [];
+    const seen = new Set();
+    const out = [];
+    src.forEach((r) => {
+      if (!r || !r.name || r.name !== fieldName) return;
+      const val = r.value === undefined || r.value === null ? "" : String(r.value);
+      if (String(val).trim() === "") return; // nothing to fill
+      if (seen.has(val)) return;
+      seen.add(val);
+      out.push({
+        display: r.display ? String(r.display) : val,
+        value: val,
+        type: r.type || "string",
+      });
+    });
+    return out;
+  }
+
+  // Warnings for `type: option` params that resolve to no Form-library choice.
+  // Each param's `name` must match a field (by its label, else its key) that
+  // defines at least one value row. Returns { ok, errors, warnings }.
+  function validateOptionParams(yaml, forms) {
+    const warnings = [];
+    const params = parseParams(yaml || "");
+    params.forEach((p, idx) => {
+      if (!p.type || p.type.toLowerCase() !== "option") return;
+      const name = String(p.name || "").trim();
+      if (paramOptionRows(p, forms).length === 0) {
+        warnings.push(
+          `param ${idx + 1} "${name}": type: option matches no choice in the Form library (a field whose label or name equals "${name}" with at least one defined value)`
+        );
+      }
+    });
+    return { ok: warnings.length === 0, errors: [], warnings };
   }
 
   /* ---------- Common steps (single doc) ---------- */
@@ -1101,6 +1159,8 @@
     parseHeader,
     parseFormBlock,
     parseParams,
+    paramOptionRows,
+    validateOptionParams,
     parseActionToken,
     effectiveAction,
     parseCommonSteps,

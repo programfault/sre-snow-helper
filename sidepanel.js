@@ -683,6 +683,7 @@ function loadState(cb) {
     [
       "srePlaybooks",
       "sreCommonSteps",
+      "sreForms",
       "sreServices",
       "srePanelState",
       "sreChatSpaceRules",
@@ -701,6 +702,7 @@ function loadState(cb) {
       snowLabelCache = normalizeLabelCache(data.sreSnowLabels);
       cb({
         playbooks: Array.isArray(data.srePlaybooks) ? data.srePlaybooks : [],
+        forms: Array.isArray(data.sreForms) ? data.sreForms : [],
         commonYaml:
           data.sreCommonSteps && typeof data.sreCommonSteps.yaml === "string"
             ? data.sreCommonSteps.yaml
@@ -948,6 +950,7 @@ function toggleRuleEnabled(ruleId, next) {
 
 function render(data) {
   const playbooks = data.playbooks || [];
+  const forms = data.forms || [];
   const servicesYaml = data.servicesYaml || "";
   const services = Y.parseServicesDoc(servicesYaml).services || [];
   const chatRules = data.chatRules || [];
@@ -1008,7 +1011,7 @@ function render(data) {
     megaBody.className = "mega-body";
 
     playbooks.forEach((pb) => {
-      megaBody.appendChild(renderPlaybookCard(pb, common));
+      megaBody.appendChild(renderPlaybookCard(pb, common, forms));
     });
 
     mega.appendChild(megaHeader);
@@ -1025,7 +1028,7 @@ function render(data) {
   }
 }
 
-function renderPlaybookCard(pb, common) {
+function renderPlaybookCard(pb, common, forms) {
   const yaml = pb.yaml || "";
   const header = Y.parseHeader(yaml);
   const pbParams = Y.parseParams(yaml);
@@ -1073,19 +1076,13 @@ function renderPlaybookCard(pb, common) {
     commonParams.forEach((p, pIdx) => {
       paramRows.push({
         badge: "common",
-        label: p.name,
-        type: p.type,
         key: `common-param${pIdx}`,
+        p,
       });
     });
   }
   pbParams.forEach((p, idx) => {
-    paramRows.push({
-      badge: "playbook",
-      label: p.name,
-      type: p.type,
-      key: `param${idx}`,
-    });
+    paramRows.push({ badge: "playbook", key: `param${idx}`, p });
   });
 
   if (paramRows.length > 0) {
@@ -1095,19 +1092,7 @@ function renderPlaybookCard(pb, common) {
     cardBody.appendChild(sectionLabel);
 
     paramRows.forEach((r) => {
-      const row = document.createElement("div");
-      row.className = "param-row";
-      const isArea = r.type === "textarea";
-      row.innerHTML = `
-        <label><span class="param-source">${escapeHtml(r.badge)}</span><span class="param-label-text"></span></label>
-        ${
-          isArea
-            ? `<textarea data-param="${escapeAttr(r.key)}" rows="3" placeholder="${escapeAttr(r.label)}"></textarea>`
-            : `<input type="text" data-param="${escapeAttr(r.key)}" placeholder="${escapeAttr(r.label)}" />`
-        }
-      `;
-      row.querySelector(".param-label-text").textContent = r.label;
-      cardBody.appendChild(row);
+      cardBody.appendChild(renderParamRow(r, forms, pb.id));
     });
   }
 
@@ -1154,6 +1139,86 @@ function renderPlaybookCard(pb, common) {
   card.appendChild(cardHeader);
   card.appendChild(cardBody);
   return card;
+}
+
+// A single parameter widget on a playbook card. The widget depends on type:
+//   textarea -> multi-line <textarea>
+//   option   -> radio group fed from the Form library (paramOptionRows): each
+//               radio shows the row's `display` and carries its `value`; the
+//               first choice is pre-selected. When the Form library has no
+//               matching field, fall back to a free-text input (with a hint) so
+//               a mis-configuration never blocks execution.
+//   else     -> single-line <input>
+// `r` = { p: <parsed param {name,type}>, key: "paramN"|"common-paramN", badge }.
+function renderParamRow(r, forms, cardId) {
+  const row = document.createElement("div");
+  row.className = "param-row";
+  const label = (r.p && r.p.name) || "";
+  const pType = ((r.p && r.p.type) || "").toLowerCase();
+
+  const header = document.createElement("label");
+  header.innerHTML = `<span class="param-source">${escapeHtml(r.badge)}</span><span class="param-label-text"></span>`;
+  header.querySelector(".param-label-text").textContent = label;
+  row.appendChild(header);
+
+  const appendText = (hint) => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.dataset.param = r.key;
+    input.placeholder = label;
+    row.appendChild(input);
+    if (hint) {
+      const hintEl = document.createElement("div");
+      hintEl.className = "param-option-missing";
+      hintEl.textContent = hint;
+      row.appendChild(hintEl);
+    }
+  };
+
+  if (pType === "option") {
+    const options = Y.paramOptionRows(r.p, forms || []);
+    if (options.length === 0) {
+      appendText(
+        `No Form-library match for “${label}” — entered as free text instead.`
+      );
+      return row;
+    }
+    const group = document.createElement("div");
+    group.className = "param-options";
+    // Radios group by their `name` attribute; give every card+param a unique
+    // name so picking a choice on one card never clears another card's group.
+    const groupName = `pbparam-${cardId || "?"}-${r.key}`;
+    options.forEach((o, i) => {
+      const opt = document.createElement("label");
+      opt.className = "param-option";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = groupName;
+      radio.value = o.value;
+      radio.dataset.param = r.key;
+      if (i === 0) radio.checked = true; // default: first choice
+      const text = document.createElement("span");
+      text.className = "param-option-text";
+      text.textContent = o.display;
+      opt.appendChild(radio);
+      opt.appendChild(text);
+      group.appendChild(opt);
+    });
+    row.appendChild(group);
+    return row;
+  }
+
+  if (pType === "textarea") {
+    const area = document.createElement("textarea");
+    area.rows = 3;
+    area.dataset.param = r.key;
+    area.placeholder = label;
+    row.appendChild(area);
+    return row;
+  }
+
+  appendText();
+  return row;
 }
 
 function renderStepItem(step, idx, common) {
@@ -1675,6 +1740,18 @@ function snowResultBody(r) {
   return display.length > 600 ? display.slice(0, 600) + "\n…" : display;
 }
 
+// Read one parameter widget's value off a playbook card: for an option group
+// the *checked* radio wins (the first choice is pre-selected at render time);
+// text inputs / textareas report their raw value. Returns null when no widget
+// exists for the key.
+function readParamValue(card, key) {
+  const sel = `[data-param="${cssEscape(key)}"]`;
+  const checked = card.querySelector(sel + ":checked");
+  if (checked) return checked.value;
+  const field = card.querySelector(sel);
+  return field ? field.value : null;
+}
+
 // Execute a flow against the current ServiceNow incident.
 //   Dry Run  — resolve + preview payloads only, nothing is sent.
 //   Execute  — action=true steps are PATCHed individually in flow order; the
@@ -1690,18 +1767,17 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
     return;
   }
 
-  // Collect param values from the card inputs (single-line <input> or the
-  // multi-line <textarea> — both are tagged with data-param).
+  // Collect param values from the card widgets (text <input> / <textarea> /
+  // option radio groups — every widget is tagged with data-param).
   const pbValues = {};
   pbParams.forEach((p, idx) => {
-    const field = card.querySelector(`[data-param="${cssEscape("param" + idx)}"]`);
-    if (field) pbValues["param" + idx] = field.value;
+    const v = readParamValue(card, "param" + idx);
+    if (v !== null) pbValues["param" + idx] = v;
   });
   const commonValues = {};
   commonParams.forEach((p, idx) => {
-    const key = "common-param" + idx;
-    const field = card.querySelector(`[data-param="${cssEscape(key)}"]`);
-    if (field) commonValues["param" + idx] = field.value;
+    const v = readParamValue(card, "common-param" + idx);
+    if (v !== null) commonValues["param" + idx] = v;
   });
 
   // Incident context satisfies ${incidentId} / ${userToken} / ${number} /
@@ -1907,6 +1983,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (
     changes.srePlaybooks ||
     changes.sreCommonSteps ||
+    changes.sreForms ||
     changes.sreServices ||
     changes.srePanelState ||
     changes.sreChatSpaceRules ||

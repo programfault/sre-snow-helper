@@ -30,6 +30,8 @@ const STORES = {
       "# params:\n" +
       "#   - name: User Name\n" +
       "#     type: textarea   # optional: multi-line input box\n" +
+      "#   - name: Configuration item\n" +
+      "#     type: option     # optional: radio group fed from the Form library\n" +
       "# flow:\n" +
       "#   - name: ack user\n" +
       "#     ref: ack              # key into the Common Steps doc\n" +

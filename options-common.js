@@ -8,11 +8,14 @@ const COMMON_DOC_PLACEHOLDER =
   [
     "# Shared parameters for the common steps below.",
     "# Referenced inside common forms as ${param0}, ${param1}, ...",
-    "# Optional per-param `type: textarea` renders a multi-line box instead of",
-    "# a single-line input (anything else / omitted = single-line input).",
+    "# Optional per-param type hints:",
+    "#   type: textarea -> multi-line box (default is a single-line input)",
+    "#   type: option   -> radio group whose choices come from the Form library",
     "params:",
     "  - name: User Name",
     "    type: textarea",
+    "  - name: Configuration item",
+    "    type: option",
     "",
     "# Library of reusable steps. The key is what playbooks use in `ref:`.",
     "# `action: true` marks a step that is sent by itself (not merged).",
@@ -21,6 +24,10 @@ const COMMON_DOC_PLACEHOLDER =
     "    action: true",
     "    form:",
     "      note: acknowledged ${param0}",
+    "  investigate:",
+    "    action: true",
+    "    form:",
+    "      u_substate: ${param1}",
   ].join("\n");
 
 let commonCm = null;
@@ -69,10 +76,14 @@ const commonValidateBtn = document.getElementById("validateCommonDoc");
 if (commonValidateBtn) {
   commonValidateBtn.addEventListener("click", () => {
     const valEl = document.getElementById("commonValidation");
-    const report = Y.validateCommonStepsDoc(
-      (commonDoc && commonDoc.yaml) || "",
-      Y.indexForms(forms)
-    );
+    const yaml = (commonDoc && commonDoc.yaml) || "";
+    const base = Y.validateCommonStepsDoc(yaml, Y.indexForms(forms));
+    const opt = Y.validateOptionParams(yaml, forms);
+    const report = {
+      ok: base.ok && opt.ok,
+      errors: base.errors.concat(opt.errors),
+      warnings: base.warnings.concat(opt.warnings),
+    };
     renderValidationBox(valEl, report);
   });
 }

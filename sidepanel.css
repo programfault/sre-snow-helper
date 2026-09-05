@@ -262,8 +262,8 @@ body {
   flex: 1;
 }
 
-.param-row input,
-.param-row textarea {
+.param-row > input[type="text"],
+.param-row > textarea {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -272,17 +272,53 @@ body {
   color: var(--text);
 }
 
-.param-row textarea {
+.param-row > textarea {
   resize: vertical;
   min-height: 64px;
   font-family: inherit;
   line-height: 1.5;
 }
 
-.param-row input:focus,
-.param-row textarea:focus {
+.param-row > input[type="text"]:focus,
+.param-row > textarea:focus {
   outline: none;
   border-color: var(--primary);
+}
+
+/* Option-typed param: radio group fed from the Form library. */
+.param-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 2px;
+}
+
+.param-options .param-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.param-option input[type="radio"] {
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+}
+
+.param-option-text {
+  overflow-wrap: anywhere;
+}
+
+.param-option-missing {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- Steps list ---------- */

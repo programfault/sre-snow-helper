@@ -258,11 +258,17 @@ function renderCards() {
           (commonDoc && commonDoc.yaml) || ""
         );
         const formsByName = Y.indexForms(forms);
-        const report = Y.validatePlaybookFlow(
+        const base = Y.validatePlaybookFlow(
           item.yaml,
           commonByName,
           formsByName
         );
+        const opt = Y.validateOptionParams(item.yaml, forms);
+        const report = {
+          ok: base.ok && opt.ok,
+          errors: base.errors.concat(opt.errors),
+          warnings: base.warnings.concat(opt.warnings),
+        };
         renderValidationBox(valEl, report);
         card.classList.remove("validating");
       });
