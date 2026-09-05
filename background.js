@@ -354,3 +354,130 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   return false;
 });
+
+/* ---------- ServiceNow incident context broker ---------- */
+//
+// snow-content.js (every service-now.com frame) reports partial snapshots of
+// the record it sees: token (window.g_ck), instance, sysid, number. Multiple
+// frames/tabs may report simultaneously — the classic UI splits data between
+// the shell frame (token) and the #gsft_main form frame (sysid + number) — so
+// we merge per tab and hand the SIDE PANEL the "best" snapshot:
+//   * the snapshot of the ACTIVE ServiceNow tab if there is one, otherwise
+//   * the most recently updated one.
+// The side panel exposes it as the incident Info row and uses it to sign
+// real PATCH requests (credentials include + X-UserToken).
+const snowByTab = new Map(); // tabId -> merged ctx
+let snowActiveTabId = null;
+
+function snowFields(entry) {
+  if (!entry) return null;
+  const snap = {
+    instance: entry.instance || null,
+    token: entry.token || null,
+    sysid: entry.sysid || null,
+    number: entry.number || null,
+  };
+  return snap.instance || snap.token || snap.sysid || snap.number ? snap : null;
+}
+
+function snowSame(a, b) {
+  return JSON.stringify(snowFields(a)) === JSON.stringify(snowFields(b));
+}
+
+function snowPickBest() {
+  let best = null;
+  if (snowActiveTabId != null && snowByTab.has(snowActiveTabId)) {
+    best = snowByTab.get(snowActiveTabId);
+  }
+  if (!best) {
+    // Most recent across all tabs.
+    for (const entry of snowByTab.values()) {
+      if (!best || entry.at > best.at) best = entry;
+    }
+  }
+  return snowFields(best);
+}
+
+let snowLastBroadcast = null;
+function snowBroadcast() {
+  const best = snowPickBest();
+  if (snowSame(snowLastBroadcast, best)) return;
+  snowLastBroadcast = best;
+  try {
+    chrome.runtime
+      .sendMessage({ type: "snow_ctx", ctx: best })
+      .catch(() => {});
+  } catch (_) {}
+}
+
+function snowMergeReport(tabId, ctx) {
+  if (!ctx || typeof ctx !== "object") return;
+  const prev = snowByTab.get(tabId) || {};
+  const merged = {
+    instance: ctx.instance || prev.instance || null,
+    url: ctx.url || prev.url || "",
+    at: ctx.at || Date.now(),
+    token: ctx.token || prev.token || null,
+    sysid: ctx.sysid || prev.sysid || null,
+    number: ctx.number || prev.number || null,
+  };
+  snowByTab.set(tabId, merged);
+  snowBroadcast();
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg.type !== "string") return false;
+
+  // Content script (snow-content.js) reporting a record snapshot.
+  if (msg.type === "snow_probe") {
+    const tabId = sender && sender.tab ? sender.tab.id : null;
+    if (tabId != null) snowMergeReport(tabId, msg.ctx);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  // Side panel asking for the current best snapshot. If we have nothing (e.g.
+  // the service worker restarted) poke the active ServiceNow tab to re-probe
+  // and answer after it has had a moment to report back.
+  if (msg.type === "snow_get_current") {
+    let best = snowPickBest();
+    if (!best && snowActiveTabId != null) {
+      try {
+        chrome.tabs.sendMessage(snowActiveTabId, { type: "snow_request_probe" });
+      } catch (_) {}
+      setTimeout(() => {
+        sendResponse({ ok: true, ctx: snowPickBest() });
+      }, 650);
+      return true; // async
+    }
+    sendResponse({ ok: true, ctx: best });
+    return false;
+  }
+
+  return false;
+});
+
+chrome.tabs.onActivated.addListener((info) => {
+  snowActiveTabId = info.tabId;
+  // If the newly focused tab is a ServiceNow tab, ask it to refresh so the
+  // side panel Info row follows what the user is actually looking at.
+  try {
+    chrome.tabs.get(info.tabId, (tab) => {
+      if (!tab || !tab.url) return;
+      const url = String(tab.url || "");
+      const isSnow =
+        /^https:\/\/[^/]*service-now\.com\//.test(url);
+      if (isSnow) {
+        try {
+          chrome.tabs.sendMessage(info.tabId, { type: "snow_request_probe" });
+        } catch (_) {}
+      }
+    });
+  } catch (_) {}
+  snowBroadcast();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (snowByTab.delete(tabId)) snowBroadcast();
+  if (snowActiveTabId === tabId) snowActiveTabId = null;
+});

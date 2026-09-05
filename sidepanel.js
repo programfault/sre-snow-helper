@@ -19,6 +19,192 @@ let srePanelState = { megaCollapsed: {}, cardCollapsed: {} };
 const contentEl = document.getElementById("content");
 const openOptionsBtn = document.getElementById("openOptions");
 
+// ServiceNow incident context — mirrors the best snapshot chosen by
+// background.js (active ServiceNow tab, else most recent). Populated on load
+// and kept fresh by the "snow_ctx" broadcasts below.
+let snowCtx = null;
+
+// Variable names that are satisfied from the incident context instead of a
+// user prompt: ${number}, ${userToken}, ${incidentId} (= sys_id), ${instance}.
+const SN_CTX_VARS = new Set(["number", "userToken", "incidentId", "instance"]);
+
+// Map only the context fields that are actually present. Omitting an empty
+// field leaves its ${placeholder} unresolved, so callers can surface a clear
+// "open an incident first" error instead of silently sending an empty string.
+function snowVars() {
+  const c = snowCtx || {};
+  const out = {};
+  if (c.sysid) out.incidentId = String(c.sysid);
+  if (c.token) out.userToken = String(c.token);
+  if (c.number) out.number = String(c.number);
+  if (c.instance) out.instance = String(c.instance);
+  return out;
+}
+
+/* ---------- ServiceNow incident Info panel ---------- */
+//
+// Non-collapsible summary of the incident the user is currently looking at.
+// It mirrors the context broker's best snapshot (active ServiceNow tab, else
+// the most recently touched one) so users can read / copy Number, the CSRF
+// UserToken (window.g_ck) and the record sys_id before executing a flow.
+// The same snapshot feeds ${incidentId} / ${userToken} / ${number} /
+// ${instance} placeholders and signs real PATCH requests.
+
+const SN_INFO_FIELDS = [
+  { key: "number", label: "Number" },
+  { key: "token", label: "UserToken" },
+  { key: "sysid", label: "IncidentID" },
+];
+
+let snowInfoRoot = null; // the currently mounted Info panel (rebuilds on re-render)
+
+function copyToClipboard(text) {
+  if (!text) return Promise.resolve(false);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard
+      .writeText(text)
+      .then(() => true)
+      .catch(() => legacyCopy(text));
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
+// execCommand fallback (works in the side panel without clipboardWrite).
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.top = "0";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (_) {}
+  document.body.removeChild(ta);
+  return ok;
+}
+
+// Ask the background broker for the freshest incident snapshot and refresh the
+// Info panel once it answers.
+function refreshSnowContext() {
+  try {
+    chrome.runtime.sendMessage({ type: "snow_get_current" }, (resp) => {
+      if (chrome.runtime.lastError) return;
+      if (resp && resp.ctx) {
+        snowCtx = resp.ctx;
+        snowRefreshInfo();
+      }
+    });
+  } catch (_) {}
+}
+
+// Broadcasts from background.js keep the snapshot current while the user
+// switches between ServiceNow tabs / records.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || msg.type !== "snow_ctx") return;
+  snowCtx = msg.ctx || null;
+  snowRefreshInfo();
+});
+
+function renderSnowInfoPanel() {
+  const root = document.createElement("div");
+  root.className = "snow-info";
+  snowInfoRoot = root;
+
+  const head = document.createElement("div");
+  head.className = "snow-info-head";
+  const icon = document.createElement("span");
+  icon.className = "snow-info-icon";
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>';
+  const title = document.createElement("span");
+  title.className = "snow-info-title";
+  title.textContent = "Incident Info";
+  head.appendChild(icon);
+  head.appendChild(title);
+  root.appendChild(head);
+
+  const hint = document.createElement("div");
+  hint.className = "snow-info-hint";
+  hint.textContent =
+    "Open an incident in ServiceNow to capture Number, UserToken and IncidentID automatically.";
+  root.appendChild(hint);
+
+  const rows = document.createElement("div");
+  rows.className = "snow-info-rows";
+  SN_INFO_FIELDS.forEach((f) => {
+    const row = document.createElement("div");
+    row.className = "snow-info-row";
+    row.dataset.field = f.key;
+
+    const label = document.createElement("span");
+    label.className = "snow-info-label";
+    label.textContent = f.label;
+
+    const value = document.createElement("span");
+    value.className = "snow-info-value";
+    value.textContent = "—";
+
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "snow-copy-btn";
+    copy.title = "Copy " + f.label;
+    copy.innerHTML =
+      '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+    copy.addEventListener("click", () => {
+      const val = (snowCtx && snowCtx[f.key]) || "";
+      if (!val) return;
+      copyToClipboard(String(val)).then((ok) => {
+        if (!ok) {
+          toast.error("Copy failed", "Could not copy " + f.label + " to the clipboard.");
+          return;
+        }
+        copy.classList.add("copied");
+        const prev = copy.innerHTML;
+        copy.innerHTML = "✓";
+        setTimeout(() => {
+          copy.innerHTML = prev;
+          copy.classList.remove("copied");
+        }, 1200);
+      });
+    });
+    row.appendChild(label);
+    row.appendChild(value);
+    row.appendChild(copy);
+    rows.appendChild(row);
+  });
+  root.appendChild(rows);
+
+  return root;
+}
+
+// Update the mounted Info panel's values from the current snapshot without
+// rebuilding the whole panel (so the rest of the UI is left untouched).
+function snowRefreshInfo() {
+  if (!snowInfoRoot || !snowInfoRoot.isConnected) return;
+  const c = snowCtx || {};
+  const rowEls = snowInfoRoot.querySelectorAll(".snow-info-row");
+  SN_INFO_FIELDS.forEach((f, i) => {
+    const row = rowEls[i];
+    if (!row) return;
+    const raw = c[f.key];
+    const text = raw ? String(raw) : "";
+    const valueEl = row.querySelector(".snow-info-value");
+    const copyEl = row.querySelector(".snow-copy-btn");
+    if (valueEl) {
+      valueEl.textContent = text || "—";
+      valueEl.classList.toggle("empty", !text);
+      valueEl.title = text;
+    }
+    if (copyEl) copyEl.classList.toggle("disabled", !text);
+  });
+  const hint = snowInfoRoot.querySelector(".snow-info-hint");
+  const hasAny = SN_INFO_FIELDS.some((f) => c[f.key]);
+  if (hint) hint.classList.toggle("hidden", hasAny);
+}
+
 openOptionsBtn.addEventListener("click", () => {
   if (chrome.runtime.openOptionsPage) chrome.runtime.openOptionsPage();
 });
@@ -301,7 +487,6 @@ function render(data) {
   // 1) Chat Ring Monitor — appears above the other panels.
   contentEl.appendChild(renderChatMonitorPanel(chatRules, chatMonitor, data.ringtones || []));
 
-  // 2) Playbooks mega panel.
   if (playbooks.length === 0 && services.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
@@ -309,6 +494,18 @@ function render(data) {
     contentEl.appendChild(empty);
     return;
   }
+
+  // The incident Info panel is non-collapsible and sits directly above the
+  // ServiceNow flows panel (or the Services panel when no flows exist).
+  let snowInfoShown = false;
+  const appendSnowInfo = () => {
+    if (!snowInfoShown) {
+      const root = renderSnowInfoPanel();
+      contentEl.appendChild(root);
+      snowInfoShown = true;
+      snowRefreshInfo(); // render current snapshot once the panel is mounted
+    }
+  };
 
   if (playbooks.length > 0) {
     // Shared Common Steps document (params + step map).
@@ -345,11 +542,13 @@ function render(data) {
 
     mega.appendChild(megaHeader);
     mega.appendChild(megaBody);
+    appendSnowInfo();
     contentEl.appendChild(mega);
   }
 
   // 3) Services mega panel (runs below Playbooks).
   if (services.length > 0) {
+    appendSnowInfo();
     contentEl.appendChild(renderServicesPanel(services));
   }
 }
@@ -771,16 +970,20 @@ function renderServiceStepRow(svc, idx) {
 
 // Perform one HTTP call. Returns { failed, status?, error?, url?, out }.
 async function runServiceStep(svc, values) {
-  const url = Y.resolvePlaceholders(svc.endpoint, values);
+  // Context placeholders (${incidentId}, ${userToken}, ${number}, ${instance})
+  // resolve from the ServiceNow incident snapshot. Explicit service inputs win
+  // over context on a name clash.
+  const effective = Object.assign({}, snowVars(), values || {});
+  const url = Y.resolvePlaceholders(svc.endpoint, effective);
   const headers = {};
-  const rawHeaders = Y.resolveTemplate(svc.header || {}, values);
+  const rawHeaders = Y.resolveTemplate(svc.header || {}, effective);
   for (const [k, v] of Object.entries(rawHeaders || {})) {
     if (v !== null && v !== undefined) headers[k] = String(v);
   }
   const init = { method: svc.method || "GET", headers };
   const hasBody = svc.method !== "GET" && svc.body !== null && svc.body !== undefined;
   if (hasBody) {
-    const body = Y.resolveTemplate(svc.body, values);
+    const body = Y.resolveTemplate(svc.body, effective);
     if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
@@ -792,6 +995,21 @@ async function runServiceStep(svc, values) {
       failed: true,
       error: "missing value(s): " + leftOver.map((n) => "${" + n + "}").join(", "),
     };
+  }
+
+  // Universal ServiceNow layer: any request aimed at *.service-now.com is sent
+  // with the browser's login cookies (credentials: include) and signed with
+  // the CSRF token captured from the page (X-UserToken, window.g_ck).
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch (_) {}
+  const isSnow = /(^|\.)service-now\.com$/i.test(host);
+  if (isSnow) {
+    init.credentials = "include";
+    if (!headers["X-UserToken"] && snowCtx && snowCtx.token) {
+      headers["X-UserToken"] = String(snowCtx.token);
+    }
   }
 
   try {
@@ -934,9 +1152,67 @@ const toast = (() => {
 
 /* ---------- Execute ---------- */
 
-function executePlaybook(card, pb, flow, pbParams, commonParams, common, opts) {
+// Build the REST Table API endpoint for the incident currently in context.
+// This round targets incidents only: PATCH /api/now/table/incident/<sys_id>.
+function snowIncidentEndpoint() {
+  const c = snowCtx || {};
+  if (!c.instance || !c.sysid) return null;
+  return "https://" + c.instance + "/api/now/table/incident/" + c.sysid;
+}
+
+// Sign a real PATCH against the current incident with the captured CSRF token
+// and the browser's ServiceNow cookies (credentials: include). `url` is the
+// endpoint captured at run start so a mid-run tab switch cannot retarget it.
+async function snowPatchIncident(body, url) {
+  const c = snowCtx || {};
+  const target = url || snowIncidentEndpoint();
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (c.token) headers["X-UserToken"] = String(c.token);
+  try {
+    const resp = await fetch(target, {
+      method: "PATCH",
+      credentials: "include",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const text = await resp.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch (_) {}
+    return { ok: resp.ok, failed: !resp.ok, status: resp.status, json, text, url: target };
+  } catch (err) {
+    return { failed: true, error: String((err && err.message) || err) };
+  }
+}
+
+// Keep result toasts readable (a successful PATCH echoes back the whole record).
+function snowResultBody(r) {
+  if (!r || r.failed) {
+    return r && r.error
+      ? r.error
+      : r && r.text && r.text.length
+      ? r.text
+      : "Request failed.";
+  }
+  const txt = (r.text || "").trim();
+  const display = txt.length ? txt : "HTTP " + r.status;
+  return display.length > 600 ? display.slice(0, 600) + "\n…" : display;
+}
+
+// Execute a flow against the current ServiceNow incident.
+//   Dry Run  — resolve + preview payloads only, nothing is sent.
+//   Execute  — action=true steps are PATCHed individually in flow order; the
+//              remaining steps are merged into a single final PATCH. Every
+//              request is signed with the captured UserToken and the browser's
+//              ServiceNow cookies.
+async function executePlaybook(card, pb, flow, pbParams, commonParams, common, opts) {
   const dryRun = Boolean(opts && opts.dryRun);
   const header = Y.parseHeader(pb.yaml || "");
+  const title = header.name || "";
   if (flow.length === 0) {
     toast.info("No steps", "This playbook has no steps to execute.");
     return;
@@ -956,13 +1232,40 @@ function executePlaybook(card, pb, flow, pbParams, commonParams, common, opts) {
     if (field) commonValues["param" + idx] = field.value;
   });
 
-  const title = header.name || "";
-  toast.info(dryRun ? `Dry run: ${title}` : `Executing: ${title}`, `${flow.length} step(s)`);
+  // Incident context satisfies ${incidentId} / ${userToken} / ${number} /
+  // ${instance}; explicit parameter values keep their normal keys.
+  const ctxVars = snowVars();
+  const pbResolve = Object.assign({}, ctxVars, pbValues);
+  const commonResolve = Object.assign({}, ctxVars, commonValues);
 
   // Resolve every step into a payload (or an error) first, tagging each with
   // its effective `action` (flow item's own value wins; else the referenced
-  // common step's value; else false).
+  // common step's value; else false). A payload still containing ${…} after
+  // resolution is an error — it must never reach ServiceNow literally.
   const commonSteps = (common && common.steps) || {};
+  const finishUnit = (idx, displayName, refName, formMap, actionVal) => {
+    const leftover = collectUnresolved([formMap]);
+    if (leftover.length > 0) {
+      const params = leftover.filter((n) => !SN_CTX_VARS.has(n));
+      const ctx = leftover.filter((n) => SN_CTX_VARS.has(n));
+      const msgs = [];
+      if (params.length) {
+        msgs.push(
+          "fill in " + params.map((n) => "${" + n + "}").join(", ") + " in the Parameters form"
+        );
+      }
+      if (ctx.length) {
+        msgs.push(
+          "open an incident in ServiceNow so " +
+            ctx.map((n) => "${" + n + "}").join(", ") +
+            " can be captured"
+        );
+      }
+      return { idx, name: displayName, error: "missing value(s): " + msgs.join("; ") };
+    }
+    return { idx, name: displayName, ref: refName, form: formMap, action: actionVal };
+  };
+
   const units = flow.map((step, idx) => {
     const displayName = step.name || step.ref || `step ${idx + 1}`;
     const resolve = (formMap, values) => {
@@ -972,73 +1275,118 @@ function executePlaybook(card, pb, flow, pbParams, commonParams, common, opts) {
       }
       return resolved;
     };
-    let formMap;
     if (step.ref) {
       const commonStep = commonSteps[step.ref];
       const hasOwn = step.form && Object.keys(step.form).length > 0;
       if (hasOwn) {
         // A ref item may carry its own form; its ${paramN} refer to the
         // playbook's params (the item lives in the playbook YAML).
-        formMap = resolve(step.form, pbValues);
-      } else if (commonStep) {
+        return finishUnit(
+          idx,
+          displayName,
+          step.ref,
+          resolve(step.form, pbResolve),
+          Y.effectiveAction(step.action, commonStep && commonStep.action)
+        );
+      }
+      if (commonStep) {
         // Reuse the referenced common step's form, resolved against the
         // common doc's own params.
-        formMap = resolve(commonStep.form || {}, commonValues);
-      } else {
-        return {
+        return finishUnit(
           idx,
-          name: displayName,
-          error: `Common step "${step.ref}" not found`,
-        };
+          displayName,
+          step.ref,
+          resolve(commonStep.form || {}, commonResolve),
+          Y.effectiveAction(step.action, commonStep.action)
+        );
       }
-      return {
-        idx,
-        name: displayName,
-        ref: step.ref,
-        form: formMap,
-        action: Y.effectiveAction(step.action, commonStep && commonStep.action),
-      };
+      return { idx, name: displayName, error: `Common step "${step.ref}" not found` };
     }
     // Inline step.
-    formMap = resolve(step.form || {}, pbValues);
-    return {
+    return finishUnit(
       idx,
-      name: displayName,
-      form: formMap,
-      action: Y.effectiveAction(step.action, undefined),
-    };
+      displayName,
+      undefined,
+      resolve(step.form || {}, pbResolve),
+      Y.effectiveAction(step.action, undefined)
+    );
   });
 
   const errors = units.filter((u) => u.error);
   const solo = units.filter((u) => !u.error && u.action === true);
   const merged = units.filter((u) => !u.error && u.action !== true);
-  const tone = dryRun ? "info" : "success"; // dry run only previews
 
-  // 1) Errors — surfaced immediately, individually.
+  // Errors — surfaced immediately, individually.
   errors.forEach((u) => {
     toast.error(`Step ${u.idx + 1}/${flow.length} — ${u.name}`, u.error);
   });
 
-  // 2) action=true steps — would be sent individually, in flow order.
-  solo.forEach((u) => {
-    const label = u.ref ? `ref ${u.name}` : u.name;
-    const t = dryRun
-      ? `Dry run · Step ${u.idx + 1}/${flow.length} · ${label}`
-      : `Step ${u.idx + 1}/${flow.length} · ${label} (sent separately)`;
-    toast[tone](t, JSON.stringify(u.form, null, 2));
-  });
-
-  // 3) Remaining steps — would be merged into one final send.
-  if (merged.length > 0) {
-    const blocks = merged.map((u) => {
+  // ---- Dry run: preview only. ----
+  if (dryRun) {
+    toast.info(`Dry run: ${title}`, `${flow.length} step(s)`);
+    solo.forEach((u) => {
       const label = u.ref ? `ref ${u.name}` : u.name;
-      return `${u.name}\n${JSON.stringify(u.form, null, 2)}`;
+      toast.info(`Dry run · Step ${u.idx + 1}/${flow.length} · ${label}`, JSON.stringify(u.form, null, 2));
     });
-    const positions = merged.map((u) => u.idx + 1).join(", ");
-    const t = dryRun
-      ? `Dry run · Steps ${positions} merged`
-      : `Steps ${positions} merged (sent together)`;
-    toast[tone](t, blocks.join("\n\n"));
+    if (merged.length > 0) {
+      const combined = {};
+      merged.forEach((u) => Object.assign(combined, u.form));
+      const positions = merged.map((u) => u.idx + 1).join(", ");
+      toast.info(`Dry run · Steps ${positions} merged → single PATCH`, JSON.stringify(combined, null, 2));
+    }
+    return;
+  }
+
+  // ---- Real run: PATCH the incident on ServiceNow. ----
+  const execBtn = card.querySelector(".btn-execute");
+  const dryBtn = card.querySelector(".btn-dryrun");
+  const setBusy = (busy) => {
+    if (execBtn) {
+      execBtn.disabled = busy;
+      execBtn.textContent = busy ? "Running…" : "Execute";
+    }
+    if (dryBtn) dryBtn.disabled = busy;
+  };
+
+  // Lock the target record once: a ServiceNow tab switch mid-run must not
+  // retarget the remaining PATCHes to a different incident.
+  const endpoint = snowIncidentEndpoint();
+  if (!endpoint) {
+    toast.error(
+      `Execute: ${title}`,
+      "No ServiceNow incident context. Open the incident in ServiceNow and make sure its tab is active so the instance and sys_id are captured, then try again."
+    );
+    return;
+  }
+
+  setBusy(true);
+  toast.info(`Executing: ${title}`, `${flow.length} step(s)`);
+  try {
+    // 1) action=true steps — PATCHed individually, in flow order.
+    for (const u of solo) {
+      const label = u.ref ? `ref ${u.name}` : u.name;
+      const t = `Step ${u.idx + 1}/${flow.length} · ${label}`;
+      const r = await snowPatchIncident(u.form, endpoint);
+      if (r.ok) toast.success(`${t} · HTTP ${r.status}`, snowResultBody(r));
+      else toast.error(`${t} failed`, snowResultBody(r));
+    }
+
+    // 2) Remaining steps — merged into a single final PATCH.
+    if (merged.length > 0) {
+      const combined = {};
+      merged.forEach((u) => Object.assign(combined, u.form));
+      const positions = merged.map((u) => u.idx + 1).join(", ");
+      const t = `Steps ${positions} merged`;
+      const r = await snowPatchIncident(combined, endpoint);
+      if (r.ok) toast.success(`${t} · HTTP ${r.status}`, snowResultBody(r));
+      else toast.error(`${t} failed`, snowResultBody(r));
+    }
+
+    if (solo.length === 0 && merged.length === 0 && errors.length === 0) {
+      toast.info(`Executing: ${title}`, "Nothing to send.");
+    }
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -1066,6 +1414,7 @@ function cssEscape(s) {
 
 loadState((data) => {
   render(data);
+  refreshSnowContext();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

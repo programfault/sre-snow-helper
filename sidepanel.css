@@ -671,3 +671,122 @@ body {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ---------- ServiceNow incident Info panel ---------- */
+/* Non-collapsible summary shown above the ServiceNow flows panel: mirrors the
+   incident the user is looking at (Number / UserToken / IncidentID) with a
+   copy button per row. */
+.snow-info {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.snow-info-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+.snow-info-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  flex-shrink: 0;
+}
+
+.snow-info-title {
+  font-size: 13px;
+  font-weight: 700;
+  flex: 1;
+}
+
+.snow-info-hint {
+  padding: 0 14px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.snow-info-hint.hidden {
+  display: none;
+}
+
+.snow-info-rows {
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+}
+
+.snow-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+}
+
+.snow-info-row:hover {
+  background: var(--bg);
+}
+
+.snow-info-label {
+  width: 84px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.snow-info-value {
+  flex: 1;
+  min-width: 0;
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+.snow-info-value.empty {
+  color: var(--muted);
+}
+
+.snow-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.snow-copy-btn:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.snow-copy-btn.copied {
+  color: var(--success);
+  border-color: var(--success);
+  background: #e8f5ee;
+}
+
+.snow-copy-btn.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
