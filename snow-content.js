@@ -14,6 +14,10 @@
 //   * sysid        — the record sys_id, parsed from the URL (sys_id=...).
 //   * number       — the incident number, read from the form DOM when the
 //                    record is an incident (table detected from the URL).
+//   * callerSysid / callerName — the caller reference field of the open form,
+//                    read by the same MAIN-world probe via
+//                    g_form.getValue('caller_id') / getDisplayValue('caller_id')
+//                    (only when a live g_form is present, i.e. form pages).
 //   * at / url     — timestamp and current URL for freshness ordering.
 //
 // Every frame reports only what it can see; background.js merges the fields
@@ -120,6 +124,10 @@
       if (sysid) ctx.sysid = sysid;
       const number = readIncidentNumber(doc);
       if (number) ctx.number = number;
+      // caller captured by the MAIN-world g_form probe (only present on form
+      // pages); merged into the report so background can expose the globals.
+      if (callerSysid) ctx.callerSysid = callerSysid;
+      if (callerName) ctx.callerName = callerName;
     }
     return ctx;
   }
@@ -168,27 +176,31 @@
     return "";
   }
 
-  /* ---------- MAIN-world probe for window.g_ck ---------- */
+  /* ---------- MAIN-world probe for window.g_ck + g_form caller ---------- */
 
   // Content scripts run in an isolated world where page globals such as g_ck
-  // are invisible. Inject a tiny script into the page context that reads it
-  // and hands it back over window.postMessage.
+  // and g_form are invisible. Inject a tiny script into the page context that
+  // reads them and hands everything back over window.postMessage.
   function probeToken() {
     const old = document.getElementById(PROBE_SOURCE);
     if (old && old.parentNode) old.parentNode.removeChild(old);
     const script = document.createElement("script");
     script.id = PROBE_SOURCE;
-    script.textContent =
-      "(() => {" +
+    // Runs in the MAIN world so it can see page globals (g_ck, g_form). Reads
+    // the CSRF token plus the caller reference field of the open form:
+    //   g_form.getValue('caller_id')        -> sys_id of the caller
+    //   g_form.getDisplayValue('caller_id') -> human-readable caller name
+    script.textContent = "(() => {" +
       "try{" +
-      "var t = window.g_ck || null;" +
-      "if(!t){var f=document.getElementById('gsft_main');" +
-      "if(f&&f.contentWindow){try{t=f.contentWindow.g_ck||null;}catch(e){}}}" +
-      "window.postMessage({source:" +
-      JSON.stringify(PROBE_SOURCE) +
-      ",token:t}," +
-      JSON.stringify(origin) +
-      ");" +
+      "var t=null;" +
+      "try{t=window.g_ck||null;}catch(e){}" +
+      "if(!t){var f=document.getElementById('gsft_main');if(f&&f.contentWindow){try{t=f.contentWindow.g_ck||null;}catch(e){}}}" +
+      "var form=null;" +
+      "try{form=window.g_form||null;}catch(e){}" +
+      "if(!form){var ff=document.getElementById('gsft_main');if(ff&&ff.contentWindow){try{form=ff.contentWindow.g_form||null;}catch(e){}}}" +
+      "var cs=null,cn=null;" +
+      "if(form){try{var v=form.getValue('caller_id');if(v)cs=String(v);}catch(e){}try{var d=form.getDisplayValue('caller_id');if(d)cn=String(d);}catch(e){}}" +
+      "window.postMessage({source:" + JSON.stringify(PROBE_SOURCE) + ",token:t,callerSysid:cs,callerName:cn}," + JSON.stringify(origin) + ");" +
       "}catch(e){}" +
       "})();";
     (document.head || document.documentElement).appendChild(script);
@@ -201,10 +213,27 @@
     if (event.origin !== origin) return;
     const data = event.data || {};
     if (data.source !== PROBE_SOURCE) return;
+    let changed = false;
     if (typeof data.token === "string" && data.token) {
       token = data.token;
-      report(true);
+      changed = true;
     }
+    // caller_id (reference field): getValue() returns the sys_id of the
+    // referenced user, getDisplayValue() the human name. Only captured when a
+    // live g_form is available (incident form pages); list pages omit them.
+    if (typeof data.callerSysid === "string" && data.callerSysid) {
+      if (callerSysid !== data.callerSysid) {
+        callerSysid = data.callerSysid;
+        changed = true;
+      }
+    }
+    if (typeof data.callerName === "string" && data.callerName) {
+      if (callerName !== data.callerName) {
+        callerName = data.callerName;
+        changed = true;
+      }
+    }
+    if (changed) report(true);
   });
 
   // Re-read on user returning to the tab / page becoming visible again.

@@ -15,6 +15,11 @@
       </div>
     </div>
     <div class="header-actions">
+      <button id="envInfoBtn" class="icon-btn" title="Environment variables (live)" aria-label="Environment variables">
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+        </svg>
+      </button>
       <span class="monitor-status-dot off" id="monitorDot" title="Chat monitor: off"></span>
       <button id="openOptions" class="icon-btn" title="Open options">
         <svg viewBox="0 0 24 24" width="20" height="20">
@@ -22,15 +27,17 @@
         </svg>
       </button>
     </div>
-  </header>
 
-  <!-- Pinned context strip: always visible right under the header, does not
-       scroll with the content below. -->
-  <div id="baseStrip"></div>
+    <!-- Environment-variable popover: anchored under the header's right edge.
+         Built by sidepanel.js; opens from the info button and stays open while
+         the mouse is over it (rows carry live copy buttons). -->
+    <div id="envPopover" class="ctx-popover hidden" role="dialog" aria-label="Environment variables"></div>
+  </header>
 
   <main class="content" id="content"></main>
 
   <script src="yaml-lite.js"></script>
+  <script src="env-defs.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

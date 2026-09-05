@@ -9,6 +9,7 @@
     "https://*.service-now.com/*",
     "*://globe.com.ph/*",
     "*://*.globe.com.ph/*",
+    "https://gsmgt-prod.gobetel.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -29,7 +30,11 @@
       "all_frames": true
     },
     {
-      "matches": ["*://globe.com.ph/*", "*://*.globe.com.ph/*"],
+      "matches": [
+        "*://globe.com.ph/*",
+        "*://*.globe.com.ph/*",
+        "https://gsmgt-prod.gobetel.com/*"
+      ],
       "js": ["goble-content.js"],
       "run_at": "document_idle",
       "all_frames": false

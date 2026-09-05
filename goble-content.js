@@ -1,14 +1,16 @@
-// globe.com.ph order-page context capture content script.
+// FSM order-page context capture content script.
 //
-// Runs on globe.com.ph (and subdomains such as fsm.globe.com.ph) at
-// document_idle. It reads three values
-// straight off the page the user is looking at, whenever they can be found:
+// Runs on the FSM order sites at document_idle:
+//   * fsm.globe.com.ph (and other globe.com.ph subdomains)
+//   * gsmgt-prod.gobetel.com  (exact host; same capture logic as globe.com.ph)
+// It reads three values straight off the page the user is looking at,
+// whenever they can be found:
 //   * fwo  — OrderNumber: the first <h6> text inside main.body-content.
 //   * fsid — serviceid: the first digit-bearing text inside the parent of the
 //            <h6> whose text is exactly "Service ID".
 //   * factok — accesstoken: localStorage.getItem("accessToken").
 // Pages that do not expose a field report it as "" (empty), so switching to a
-// different globe.com.ph page clears whatever is no longer visible.
+// different FSM page clears whatever is no longer visible.
 //
 // Every report mirrors the ServiceNow probe contract: background.js merges
 // per tab, picks the "best" snapshot and hands it to the side panel, which
@@ -18,7 +20,9 @@
 (() => {
   const host = location.hostname;
   const isGoble =
-    host === "globe.com.ph" || host.endsWith(".globe.com.ph");
+    host === "globe.com.ph" ||
+    host.endsWith(".globe.com.ph") ||
+    host === "gsmgt-prod.gobetel.com";
   if (!isGoble) return;
 
   let lastSent = "";

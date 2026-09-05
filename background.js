@@ -358,16 +358,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 /* ---------- ServiceNow incident context broker ---------- */
 //
 // snow-content.js (every service-now.com frame) reports partial snapshots of
-// the record it sees: token (window.g_ck), instance, sysid, number. Multiple
-// frames/tabs may report simultaneously — the classic UI splits data between
-// the shell frame (token) and the #gsft_main form frame (sysid + number) — so
-// we merge per tab and hand the SIDE PANEL the "best" snapshot:
-//   * the snapshot of the ACTIVE ServiceNow tab if there is one, otherwise
-//   * the most recently updated one.
-// The side panel exposes it as the incident Info row and uses it to sign
-// real PATCH requests (credentials include + X-UserToken).
+// the record it sees: token (window.g_ck), instance, sysid, number, and on the
+// form also caller sysid/name. Multiple frames/tabs may report simultaneously —
+// the classic UI splits data between the shell frame (token) and the
+// #gsft_main form frame (sysid + number) — so we merge per tab.
+//
+// Context is ACTIVE-RELATIVE: the side panel only sees the snapshot of the tab
+// the user is actually looking at (live ctx), and a null is broadcast the
+// moment the active tab leaves a ServiceNow page. A separate "last" ctx keeps
+// the most recent non-empty snapshot for the Options Environment page, which
+// must keep showing values even while that page (not a SN page) is open.
 const snowByTab = new Map(); // tabId -> merged ctx
-let snowActiveTabId = null;
+let snowLastCtx = null; // last non-empty snapshot (Options Environment page)
+
+// Single source of truth for "which tab the user is looking at right now".
+// Both the ServiceNow and the FSM brokers resolve their LIVE context against
+// this tab, so switching to a non-source tab clears that source instantly.
+let activeTabInfo = { id: null, url: "" };
+
+function isSnowUrl(url) {
+  return /^https:\/\/[^/]*service-now\.com\//.test(String(url || ""));
+}
 
 function snowFields(entry) {
   if (!entry) return null;
@@ -376,36 +387,46 @@ function snowFields(entry) {
     token: entry.token || null,
     sysid: entry.sysid || null,
     number: entry.number || null,
+    callerSysid: entry.callerSysid || null,
+    callerName: entry.callerName || null,
   };
-  return snap.instance || snap.token || snap.sysid || snap.number ? snap : null;
+  return snap.instance || snap.token || snap.sysid || snap.number ||
+    snap.callerSysid || snap.callerName
+    ? snap
+    : null;
 }
 
 function snowSame(a, b) {
   return JSON.stringify(snowFields(a)) === JSON.stringify(snowFields(b));
 }
 
-function snowPickBest() {
-  let best = null;
-  if (snowActiveTabId != null && snowByTab.has(snowActiveTabId)) {
-    best = snowByTab.get(snowActiveTabId);
+// Live context = snapshot of the ACTIVE tab, but only while that tab is on a
+// ServiceNow page. Any other active tab (chat, docs, options page, new tab…)
+// yields null so the side panel clears instantly instead of resurrecting an
+// older captured value.
+function snowLive() {
+  const a = activeTabInfo;
+  if (a.id != null && isSnowUrl(a.url) && snowByTab.has(a.id)) {
+    return snowFields(snowByTab.get(a.id));
   }
-  if (!best) {
-    // Most recent across all tabs.
-    for (const entry of snowByTab.values()) {
-      if (!best || entry.at > best.at) best = entry;
-    }
-  }
-  return snowFields(best);
+  return null;
+}
+
+function snowRemember(fields) {
+  snowLastCtx = fields;
+  try {
+    chrome.storage.local.set({ sreSnowLastCtx: fields }).catch(() => {});
+  } catch (_) {}
 }
 
 let snowLastBroadcast = null;
 function snowBroadcast() {
-  const best = snowPickBest();
-  if (snowSame(snowLastBroadcast, best)) return;
-  snowLastBroadcast = best;
+  const live = snowLive();
+  if (snowSame(snowLastBroadcast, live)) return;
+  snowLastBroadcast = live;
   try {
     chrome.runtime
-      .sendMessage({ type: "snow_ctx", ctx: best })
+      .sendMessage({ type: "snow_ctx", ctx: live })
       .catch(() => {});
   } catch (_) {}
 }
@@ -420,23 +441,30 @@ function snowMergeReport(tabId, ctx) {
     token: ctx.token || prev.token || null,
     sysid: ctx.sysid || prev.sysid || null,
     number: ctx.number || prev.number || null,
+    callerSysid: ctx.callerSysid || prev.callerSysid || null,
+    callerName: ctx.callerName || prev.callerName || null,
   };
   snowByTab.set(tabId, merged);
+  // Any non-empty capture refreshes the "last" snapshot for the Options page,
+  // no matter whether its tab is the currently active one.
+  const fields = snowFields(merged);
+  if (fields) snowRemember(fields);
   snowBroadcast();
 }
 
-/* ---------- globe.com.ph order-page context broker ---------- */
+/* ---------- FSM order-page context broker (globe.com.ph / gsmgt-prod.gobetel.com) ---------- */
 //
-// goble-content.js reports the order fields visible on the current
-// globe.com.ph page (fwo = OrderNumber, fsid = serviceid, factok =
-// accesstoken). Pages that cannot extract a field report it as "" so a plain
-// page clears stale values. This broker mirrors the ServiceNow one: merge per
-// tab, prefer the ACTIVE goble tab, broadcast the best snapshot to the side
-// panel as "goble_ctx". The side panel exposes the fields as the global
-// ${f_wo_number} / ${f_sid} / ${f_access_token} variables, usable from any
-// YAML document.
+// goble-content.js reports the order fields visible on the current FSM order
+// page (fwo = OrderNumber, fsid = serviceid, factok = accesstoken). Pages that
+// cannot extract a field report it as "" so a plain page clears stale values.
+// Two hosts run the same app: globe.com.ph (+ subdomains) and, matched exactly,
+// gsmgt-prod.gobetel.com. This broker mirrors the ServiceNow one: merge per
+// tab, broadcast the ACTIVE tab's snapshot as "goble_ctx" (null once the active
+// tab leaves an FSM page), and keep a "last" non-empty snapshot for the Options
+// Environment page. The side panel exposes the fields as ${f_wo_number} /
+// ${f_sid} / ${f_access_token} variables usable from any YAML document.
 const gobleByTab = new Map(); // tabId -> merged ctx
-let gobleActiveTabId = null;
+let gobleLastCtx = null; // last non-empty snapshot (Options Environment page)
 
 function gobleHostOf(url) {
   try {
@@ -448,7 +476,11 @@ function gobleHostOf(url) {
 
 function isGobleUrl(url) {
   const h = gobleHostOf(String(url || ""));
-  return h === "globe.com.ph" || h.endsWith(".globe.com.ph");
+  return (
+    h === "globe.com.ph" ||
+    h.endsWith(".globe.com.ph") ||
+    h === "gsmgt-prod.gobetel.com" // exact host; second FSM order site
+  );
 }
 
 function gobleFields(entry) {
@@ -465,28 +497,31 @@ function gobleSame(a, b) {
   return JSON.stringify(gobleFields(a)) === JSON.stringify(gobleFields(b));
 }
 
-function goblePickBest() {
-  let best = null;
-  if (gobleActiveTabId != null && gobleByTab.has(gobleActiveTabId)) {
-    best = gobleByTab.get(gobleActiveTabId);
+// Live context = snapshot of the ACTIVE tab, but only while that tab is on an
+// FSM order page. Any other active tab yields null so the side panel clears.
+function gobleLive() {
+  const a = activeTabInfo;
+  if (a.id != null && isGobleUrl(a.url) && gobleByTab.has(a.id)) {
+    return gobleFields(gobleByTab.get(a.id));
   }
-  if (!best) {
-    // Most recent across all tabs.
-    for (const entry of gobleByTab.values()) {
-      if (!best || entry.at > best.at) best = entry;
-    }
-  }
-  return gobleFields(best);
+  return null;
+}
+
+function gobleRemember(fields) {
+  gobleLastCtx = fields;
+  try {
+    chrome.storage.local.set({ sreGobleLastCtx: fields }).catch(() => {});
+  } catch (_) {}
 }
 
 let gobleLastBroadcast = null;
 function gobleBroadcast() {
-  const best = goblePickBest();
-  if (gobleSame(gobleLastBroadcast, best)) return;
-  gobleLastBroadcast = best;
+  const live = gobleLive();
+  if (gobleSame(gobleLastBroadcast, live)) return;
+  gobleLastBroadcast = live;
   try {
     chrome.runtime
-      .sendMessage({ type: "goble_ctx", ctx: best })
+      .sendMessage({ type: "goble_ctx", ctx: live })
       .catch(() => {});
   } catch (_) {}
 }
@@ -504,6 +539,8 @@ function gobleMergeReport(tabId, ctx) {
     factok: ctx.factok !== undefined ? ctx.factok : prev.factok || "",
   };
   gobleByTab.set(tabId, merged);
+  const fields = gobleFields(merged);
+  if (fields) gobleRemember(fields);
   gobleBroadcast();
 }
 
@@ -527,74 +564,110 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
-  // Side panel asking for the current best snapshot. If we have nothing (e.g.
-  // the service worker restarted) poke the active ServiceNow tab to re-probe
-  // and answer after it has had a moment to report back.
+  // Side panel asking for the current LIVE snapshot (active tab only). If the
+  // active tab is a ServiceNow page but we have nothing cached yet (e.g. the
+  // service worker restarted) poke that tab to re-probe and answer after it has
+  // had a moment to report back.
   if (msg.type === "snow_get_current") {
-    let best = snowPickBest();
-    if (!best && snowActiveTabId != null) {
+    const live = snowLive();
+    if (!live && activeTabInfo.id != null && isSnowUrl(activeTabInfo.url)) {
       try {
-        chrome.tabs.sendMessage(snowActiveTabId, { type: "snow_request_probe" });
+        chrome.tabs.sendMessage(activeTabInfo.id, { type: "snow_request_probe" });
       } catch (_) {}
       setTimeout(() => {
-        sendResponse({ ok: true, ctx: snowPickBest() });
+        sendResponse({ ok: true, ctx: snowLive() });
       }, 650);
       return true; // async
     }
-    sendResponse({ ok: true, ctx: best });
+    sendResponse({ ok: true, ctx: live });
     return false;
   }
 
-  // goble.com twin of snow_get_current.
+  // FSM twin of snow_get_current.
   if (msg.type === "goble_get_current") {
-    let best = goblePickBest();
-    if (!best && gobleActiveTabId != null) {
+    const live = gobleLive();
+    if (!live && activeTabInfo.id != null && isGobleUrl(activeTabInfo.url)) {
       try {
-        chrome.tabs.sendMessage(gobleActiveTabId, { type: "goble_request_probe" });
+        chrome.tabs.sendMessage(activeTabInfo.id, { type: "goble_request_probe" });
       } catch (_) {}
       setTimeout(() => {
-        sendResponse({ ok: true, ctx: goblePickBest() });
+        sendResponse({ ok: true, ctx: gobleLive() });
       }, 650);
       return true; // async
     }
-    sendResponse({ ok: true, ctx: best });
+    sendResponse({ ok: true, ctx: live });
     return false;
   }
 
-  // Manual refresh from the Info panel refresh button: always re-poke a live
+  // Options Environment page: query the "last" snapshot (most recent non-empty
+  // capture), which does NOT clear when the active tab switches away. Falls
+  // back to storage if this freshly-woken service worker never saw a capture.
+  if (msg.type === "snow_get_last") {
+    if (snowLastCtx) {
+      sendResponse({ ok: true, ctx: snowLastCtx });
+      return false;
+    }
+    chrome.storage.local.get("sreSnowLastCtx", (d) => {
+      snowLastCtx = (d && d.sreSnowLastCtx) || null;
+      sendResponse({ ok: true, ctx: snowLastCtx });
+    });
+    return true; // async
+  }
+
+  // FSM twin of snow_get_last.
+  if (msg.type === "goble_get_last") {
+    if (gobleLastCtx) {
+      sendResponse({ ok: true, ctx: gobleLastCtx });
+      return false;
+    }
+    chrome.storage.local.get("sreGobleLastCtx", (d) => {
+      gobleLastCtx = (d && d.sreGobleLastCtx) || null;
+      sendResponse({ ok: true, ctx: gobleLastCtx });
+    });
+    return true; // async
+  }
+
+  // Manual refresh (Options Environment page): always re-poke a live
   // ServiceNow tab (active one preferred) so stale/empty snapshots are
   // re-probed right away instead of returning whatever is cached.
   if (msg.type === "snow_refresh") {
     chrome.tabs.query({ url: "https://*.service-now.com/*" }, (tabs) => {
       const list = tabs || [];
-      const target = list.find((t) => t.id === snowActiveTabId) || list[0] || null;
+      const target =
+        list.find((t) => t.id === activeTabInfo.id) || list[0] || null;
       if (target) {
         try {
           chrome.tabs.sendMessage(target.id, { type: "snow_request_probe" });
         } catch (_) {}
       }
       setTimeout(() => {
-        sendResponse({ ok: true, ctx: snowPickBest() });
+        sendResponse({ ok: true, ctx: snowLive() });
       }, target ? 800 : 0);
     });
     return true; // async
   }
 
-  // goble.com twin of snow_refresh.
+  // FSM twin of snow_refresh.
   if (msg.type === "goble_refresh") {
     chrome.tabs.query(
-      { url: ["*://globe.com.ph/*", "*://*.globe.com.ph/*"] },
+      {
+        url: [
+          "*://globe.com.ph/*",
+          "*://*.globe.com.ph/*",
+          "https://gsmgt-prod.gobetel.com/*",
+        ],
+      },
       (tabs) => {
         const list = tabs || [];
         const target =
-          list.find((t) => t.id === gobleActiveTabId) || list[0] || null;
+          list.find((t) => t.id === activeTabInfo.id) || list[0] || null;
         if (target) {
           try {
             chrome.tabs.sendMessage(target.id, { type: "goble_request_probe" });
           } catch (_) {}
         }
         setTimeout(() => {
-          sendResponse({ ok: true, ctx: goblePickBest() });
+          sendResponse({ ok: true, ctx: gobleLive() });
         }, target ? 800 : 0);
       }
     );
@@ -611,7 +684,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       : [];
     chrome.tabs.query({ url: "https://*.service-now.com/*" }, (tabs) => {
       const list = tabs || [];
-      const target = list.find((t) => t.id === snowActiveTabId) || list[0] || null;
+      const target =
+        list.find((t) => t.id === activeTabInfo.id) || list[0] || null;
       if (!target) {
         sendResponse({
           ok: false,
@@ -649,36 +723,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.tabs.onActivated.addListener((info) => {
-  snowActiveTabId = info.tabId;
-  gobleActiveTabId = info.tabId;
-  // If the newly focused tab is a ServiceNow tab, ask it to refresh so the
-  // side panel Info row follows what the user is actually looking at.
+  activeTabInfo = { id: info.tabId, url: "" };
+  // Resolve the newly focused tab's URL, poke it to re-probe if it is one of
+  // our capture sites, then broadcast the new live context (null for sources
+  // the active tab is not on, so the side panel clears instantly).
   try {
     chrome.tabs.get(info.tabId, (tab) => {
-      if (!tab || !tab.url) return;
+      if (chrome.runtime.lastError || !tab) return;
       const url = String(tab.url || "");
-      const isSnow =
-        /^https:\/\/[^/]*service-now\.com\//.test(url);
-      if (isSnow) {
+      activeTabInfo.url = url;
+      if (isSnowUrl(url)) {
         try {
           chrome.tabs.sendMessage(info.tabId, { type: "snow_request_probe" });
         } catch (_) {}
       }
-      // Same for a goble.com order page (goble globals track it live).
+      // Same for an FSM order page (goble globals track it live).
       if (isGobleUrl(url)) {
         try {
           chrome.tabs.sendMessage(info.tabId, { type: "goble_request_probe" });
         } catch (_) {}
       }
+      snowBroadcast();
+      gobleBroadcast();
     });
-  } catch (_) {}
+  } catch (_) {
+    snowBroadcast();
+    gobleBroadcast();
+  }
+});
+
+// Same-tab navigation: if the ACTIVE tab navigates away from a capture site
+// (e.g. an FSM order page redirects to a plain web page), its live context must
+// clear right away — the probe content script is gone and would never report.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (tabId !== activeTabInfo.id) return;
+  const newUrl = changeInfo && changeInfo.url;
+  if (!newUrl) return;
+  activeTabInfo.url = String(newUrl);
   snowBroadcast();
   gobleBroadcast();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (snowByTab.delete(tabId)) snowBroadcast();
-  if (snowActiveTabId === tabId) snowActiveTabId = null;
   if (gobleByTab.delete(tabId)) gobleBroadcast();
-  if (gobleActiveTabId === tabId) gobleActiveTabId = null;
+  if (activeTabInfo.id === tabId) activeTabInfo = { id: null, url: "" };
 });

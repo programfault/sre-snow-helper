@@ -40,6 +40,7 @@ body {
 
 /* ---------- Header ---------- */
 .header {
+  position: relative; /* anchor for the environment-variable popover below */
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -137,35 +138,109 @@ body {
   padding: 32px 14px;
 }
 
-/* ---------- Pinned context strip (Base Info) ---------- */
-/* Sits flush under the header and spans the full sidebar width; it never
-   scrolls with .content below it. */
-#baseStrip {
-  flex: 0 0 auto;
+/* ---------- Header environment-variable popover ---------- */
+/* Compact live view of the captured context (ServiceNow incident + FSM order)
+   for the ACTIVE tab. Anchored under the header's right edge; the mouse can
+   move from the info button onto it because leaving either schedules a close
+   that the other cancels. Copy buttons make it interactive, so it is a real
+   popover, not a hover-only tooltip. */
+.ctx-popover {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 12px;
+  width: 316px;
+  max-width: calc(100vw - 24px);
+  max-height: 62vh;
+  overflow-y: auto;
   background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+  z-index: 50;
+}
+
+.ctx-popover.hidden {
+  display: none;
+}
+
+.ctx-popover-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 7px;
+  font-size: 12px;
+  font-weight: 700;
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--card-bg);
 }
 
-#baseStrip .snow-info {
-  border: none;
-  border-radius: 0;
-  margin: 0;
+.ctx-group-title {
+  padding: 7px 12px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
-#baseStrip .snow-info-head {
-  padding: 8px 14px 6px;
+.ctx-group-title:first-child {
+  padding-top: 5px;
 }
 
-#baseStrip .snow-info-hint {
-  padding: 0 14px 6px;
+.ctx-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
 }
 
-#baseStrip .snow-info-rows {
-  padding: 2px 0;
+.ctx-row:hover {
+  background: var(--bg);
 }
 
-#baseStrip .snow-info-row {
-  padding: 3px 14px;
+.ctx-row-label {
+  width: 108px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctx-row-value {
+  flex: 1;
+  min-width: 0;
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.ctx-row-value.empty {
+  color: var(--muted);
+}
+
+.ctx-row .snow-copy-btn {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-popover-empty {
+  padding: 12px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.ctx-popover-empty.hidden {
+  display: none;
 }
 
 .empty-state {
