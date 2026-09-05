@@ -5,9 +5,11 @@
 //
 // What it captures about the currently viewed record:
 //   * token        — the CSRF token (window.g_ck) used by the REST Table API.
-//                    g_ck lives in the PAGE context, so we read it through a
-//                    short-lived MAIN-world probe and receive it back via
-//                    window.postMessage.
+//                    Two paths: (1) read the DOM hidden field
+//                    input[name="sysparm_ck"] directly (works on shells that
+//                    don't expose g_ck as a JS global); (2) g_ck lives in the
+//                    PAGE context, so we also inject a short-lived MAIN-world
+//                    probe and receive it back via window.postMessage.
 //   * instance     — the ServiceNow hostname (e.g. acme.service-now.com).
 //   * sysid        — the record sys_id, parsed from the URL (sys_id=...).
 //   * number       — the incident number, read from the form DOM when the
@@ -111,6 +113,7 @@
       url: location.href,
       at: Date.now(),
     };
+    if (!token) token = readTokenDom() || null; // DOM hidden field fallback
     if (token) ctx.token = token;
     if (table === "incident") {
       const sysid = currentSysId(location.href);
@@ -133,6 +136,36 @@
         void chrome.runtime.lastError;
       });
     } catch (_) {}
+  }
+
+  /* ---------- DOM-based token fallback ---------- */
+
+  // Not every ServiceNow shell exposes window.g_ck as a JS global; many
+  // (especially newer/company-customized UIs) only render the CSRF token into a
+  // hidden field. Content scripts CAN read the DOM, so read sysparm_ck directly
+  // from the top document and the classic shell's #gsft_main form document.
+  function readTokenDom() {
+    const docs = [document];
+    try {
+      const f = document.getElementById("gsft_main");
+      if (f && f.contentWindow && f.contentWindow.document) {
+        docs.push(f.contentWindow.document);
+      }
+    } catch (_) {}
+    const sels = [
+      'input[name="sysparm_ck"]',
+      'input[id="sysparm_ck"]',
+      'input[name="sysparm_csrf_token"]',
+    ];
+    for (const d of docs) {
+      for (const sel of sels) {
+        try {
+          const el = d.querySelector(sel);
+          if (el && el.value) return String(el.value).trim();
+        } catch (_) {}
+      }
+    }
+    return "";
   }
 
   /* ---------- MAIN-world probe for window.g_ck ---------- */
