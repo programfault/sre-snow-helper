@@ -57,6 +57,11 @@ const ruleState = new Map();
 
 // Audio context / playback handles
 let _audioEls = []; // keep references so garbage collection doesn't cut them off mid-play
+// FIFO playback: mirrors offscreen.js so the fallback path behaves the same —
+// only one ringtone sounds at a time; rings arriving mid-play queue up and
+// start one after the previous one ends.
+let _ringPlaying = false;
+const _ringQueue = [];
 
 // Heartbeat and storage
 const HEARTBEAT_MS = 5000;
@@ -321,31 +326,53 @@ function snapshotRuleUnread() {
 
 function playRingtone(dataUrl) {
   return new Promise((resolve) => {
-    let audio;
-    try {
-      audio = new Audio(dataUrl);
-    } catch (e) {
-      resolve({ ok: false, reason: String(e) });
-      return;
-    }
-    audio.volume = 1.0;
-    audio.play().then(
-      () => {
-        // Keep the element referenced so GC doesn't cut playback short.
-        _audioEls.push(audio);
-        resolve({ ok: true });
-      },
-      (err) => {
-        // Autoplay policies may block this until user interaction. Best-effort.
-        log("play ring failed:", err && err.message);
-        resolve({ ok: false, reason: (err && err.message) || "autoplay-blocked" });
-      }
-    );
-    audio.addEventListener("ended", () => {
-      const idx = _audioEls.indexOf(audio);
-      if (idx >= 0) _audioEls.splice(idx, 1);
-    });
+    _ringQueue.push({ dataUrl, resolve });
+    pumpRingQueue();
   });
+}
+
+function pumpRingQueue() {
+  if (_ringPlaying || _ringQueue.length === 0) return;
+  const job = _ringQueue.shift();
+  _ringPlaying = true;
+  let settled = false; // ended && error can both fire for one element
+  const settle = (ok, reason) => {
+    if (settled) return;
+    settled = true;
+    _ringPlaying = false;
+    if (ok) job.resolve({ ok: true });
+    else job.resolve({ ok: false, reason: reason || "autoplay-blocked" });
+    pumpRingQueue();
+  };
+  let audio;
+  try {
+    audio = new Audio(job.dataUrl);
+  } catch (e) {
+    settle(false, String(e));
+    return;
+  }
+  audio.volume = 1.0;
+  audio.play().then(
+    () => {
+      // Keep the element referenced so GC doesn't cut playback short.
+      _audioEls.push(audio);
+      audio.addEventListener("ended", () => {
+        const idx = _audioEls.indexOf(audio);
+        if (idx >= 0) _audioEls.splice(idx, 1);
+        settle(true);
+      });
+      audio.addEventListener("error", () => {
+        const idx = _audioEls.indexOf(audio);
+        if (idx >= 0) _audioEls.splice(idx, 1);
+        settle(true);
+      });
+    },
+    (err) => {
+      // Autoplay policies may block this until user interaction. Best-effort.
+      log("play ring failed:", err && err.message);
+      settle(false, (err && err.message) || "autoplay-blocked");
+    }
+  );
 }
 
 // Unlock autoplay on first user interaction: AudioContext / Audio play() after
