@@ -124,6 +124,27 @@
     return false;
   });
 
+  // This is a SPA: the visible order can change without any history event (or
+  // with async content that lands well after pushState fired), so neither the
+  // URL hooks above nor the startup poll are enough. Watch the DOM itself and
+  // re-snapshot once a burst of changes settles.
+  let domDebounce = null;
+  const onDomChange = () => {
+    if (domDebounce) return; // collapse bursts; fire after a quiet gap
+    domDebounce = setTimeout(() => {
+      domDebounce = null;
+      report(true);
+    }, 450);
+  };
+  try {
+    const observer = new MutationObserver(onDomChange);
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  } catch (_) {}
+
   /* ---------- Startup sequence ---------- */
 
   hookHistory();

@@ -189,12 +189,7 @@ function baseManualRefresh(btn) {
       if (ctx) {
         snowCtx = ctx;
         refreshBaseInfo();
-        if (ctx.token || ctx.sysid || ctx.number) {
-          foundAny = true;
-          // Doubles as the label-list refresh: re-fetch the picker's
-          // candidates whenever the ServiceNow snapshot refreshes.
-          refreshSnowLabelCache();
-        }
+        if (ctx.token || ctx.sysid || ctx.number) foundAny = true;
       }
       settle();
     });
@@ -317,12 +312,40 @@ function renderBaseInfoPanel() {
     rows.appendChild(row);
   });
   root.appendChild(rows);
-
-  // Labels picker: sits inside the Base Info card right below the formid row,
-  // sharing the card's refresh button (see baseManualRefresh).
-  root.appendChild(buildSnowTagSection());
-
   return root;
+}
+
+// The Labels card — its own card, separate from Base Info, so refreshing the
+// captured context never re-fetches the label list and vice versa. This card's
+// refresh button re-fetches the picker candidates only (see tagsRefreshLabels).
+function renderBaseTagsPanel() {
+  const card = document.createElement("div");
+  card.className = "snow-info snow-info-tags";
+
+  const head = document.createElement("div");
+  head.className = "snow-info-head";
+  const icon = document.createElement("span");
+  icon.className = "snow-info-icon";
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/></svg>';
+  const title = document.createElement("span");
+  title.className = "snow-info-title";
+  title.textContent = "Labels";
+
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "snow-refresh-btn";
+  refresh.title = "Refresh label list";
+  refresh.innerHTML =
+    '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
+  refresh.addEventListener("click", () => tagsRefreshLabels(refresh));
+
+  head.appendChild(icon);
+  head.appendChild(title);
+  head.appendChild(refresh);
+  card.appendChild(head);
+  card.appendChild(buildSnowTagSection());
+  return card;
 }
 
 // Update the mounted Base Info panel's values from both snapshots without
@@ -352,7 +375,7 @@ function refreshBaseInfo() {
 
 /* ---------- ServiceNow Labels (tag) picker ---------- */
 //
-// Rendered inside the Base Info panel, right under the formid row.
+// Rendered in its own "Labels" card directly below the Base Info card.
 // Two moving parts:
 //   * input/dropdown — auto-suggest / filter over the cached label list of the
 //                current instance; picked labels become chips (multi-select).
@@ -360,7 +383,7 @@ function refreshBaseInfo() {
 //                asking the active ServiceNow tab's content script to simulate
 //                typing each name into the page's tag-it control.
 // The label list is cached under chrome.storage.local key sreSnowLabels after
-// a fetch; that fetch is driven by the Base Info refresh button (the only
+// a fetch; that fetch is driven by the Labels card's refresh button (the only
 // path that re-hits ServiceNow).
 
 const SN_LABEL_GROUP = "bcd9d8ac47243a1831c140d4116d43e5"; // fixed group filter from the original script
@@ -482,19 +505,32 @@ async function snowFetchLabels() {
 }
 
 // Re-fetch the label list for the captured instance and repaint the picker.
-// Called by the Base Info refresh button (the picker no longer owns a
-// refresh control of its own). No-op while no instance/token is captured.
+// Owned by the Labels card's refresh button (the picker no longer rides on the
+// Base Info refresh). Resolves true when labels were refreshed, false when no
+// instance/token is captured. Errors are toasted here.
 function refreshSnowLabelCache() {
-  const c = snowCtx || {};
-  if (!c.instance || !c.token) return;
-  snowFetchLabels()
+  if (!(snowCtx && snowCtx.instance && snowCtx.token)) return Promise.resolve(false);
+  return snowFetchLabels()
     .then((labels) => {
       snowSaveCache(labels);
       if (snowTagApi) snowTagApi.refreshUi();
+      return true;
     })
     .catch((err) => {
       toast.error("Labels", String((err && err.message) || "Label refresh failed."));
+      return false;
     });
+}
+
+// Manual refresh of the Labels card: re-fetch the picker candidates only —
+// never touches the captured context or the Base Info rows.
+function tagsRefreshLabels(btn) {
+  if (!(snowCtx && snowCtx.instance && snowCtx.token)) {
+    toast.error("Labels", "Open a ServiceNow incident page first so the token is captured.");
+    return;
+  }
+  btn.classList.add("busy");
+  refreshSnowLabelCache().finally(() => btn.classList.remove("busy"));
 }
 
 // Toggle Add / Refresh availability from the current incident context. Called
@@ -655,7 +691,7 @@ function buildSnowTagSection() {
     addBtn.disabled = busy || !(snowCtx && snowCtx.instance) || snowTagSelected.size === 0;
   };
 
-  // Exposed to the Base Info refresh button so it can repaint the picker
+  // Exposed to the Labels card refresh button so it can repaint the picker
   // after a label cache refresh. repaintDrop is gated, so this never pops the
   // dropdown open on its own.
   snowTagApi = {
@@ -1054,16 +1090,16 @@ function render(data) {
     return;
   }
 
-  // The Base Info panel is non-collapsible and sits directly above the
-  // ServiceNow flows panel (or the Services panel when no flows exist).
-  let baseInfoShown = false;
-  const appendBaseInfo = () => {
-    if (!baseInfoShown) {
-      const root = renderBaseInfoPanel();
-      contentEl.appendChild(root);
-      baseInfoShown = true;
-      refreshBaseInfo(); // render current snapshots once the panel is mounted
-    }
+  // The Base Info and Labels cards are non-collapsible and sit directly above
+  // the ServiceNow flows panel (or the Services panel when no flows exist).
+  // Each card owns its own refresh control, so they are mounted as a pair.
+  let contextShown = false;
+  const appendContextPanels = () => {
+    if (contextShown) return;
+    contextShown = true;
+    contentEl.appendChild(renderBaseInfoPanel());
+    contentEl.appendChild(renderBaseTagsPanel());
+    refreshBaseInfo(); // render current snapshots once the panels are mounted
   };
 
   if (playbooks.length > 0) {
@@ -1101,14 +1137,14 @@ function render(data) {
 
     mega.appendChild(megaHeader);
     mega.appendChild(megaBody);
-    appendBaseInfo();
+    appendContextPanels();
     contentEl.appendChild(mega);
     snowTagCtxTick();
   }
 
   // 3) Services mega panel (runs below Playbooks).
   if (services.length > 0) {
-    appendBaseInfo();
+    appendContextPanels();
     contentEl.appendChild(renderServicesPanel(services));
   }
 }
