@@ -425,15 +425,16 @@ function snowMergeReport(tabId, ctx) {
   snowBroadcast();
 }
 
-/* ---------- goble.com order-page context broker ---------- */
+/* ---------- globe.com.ph order-page context broker ---------- */
 //
-// goble-content.js reports the order fields visible on the current goble.com
-// page (fwo = OrderNumber, fsid = serviceid, factok = accesstoken). Pages that
-// cannot extract a field report it as "" so a plain page clears stale values.
-// This broker mirrors the ServiceNow one: merge per tab, prefer the ACTIVE
-// goble tab, broadcast the best snapshot to the side panel as "goble_ctx".
-// The side panel exposes the fields as the global ${f_wo_number} / ${f_sid} /
-// ${f_access_token} variables, usable from any YAML document.
+// goble-content.js reports the order fields visible on the current
+// globe.com.ph page (fwo = OrderNumber, fsid = serviceid, factok =
+// accesstoken). Pages that cannot extract a field report it as "" so a plain
+// page clears stale values. This broker mirrors the ServiceNow one: merge per
+// tab, prefer the ACTIVE goble tab, broadcast the best snapshot to the side
+// panel as "goble_ctx". The side panel exposes the fields as the global
+// ${f_wo_number} / ${f_sid} / ${f_access_token} variables, usable from any
+// YAML document.
 const gobleByTab = new Map(); // tabId -> merged ctx
 let gobleActiveTabId = null;
 
@@ -447,7 +448,7 @@ function gobleHostOf(url) {
 
 function isGobleUrl(url) {
   const h = gobleHostOf(String(url || ""));
-  return h === "goble.com" || h.endsWith(".goble.com");
+  return h === "globe.com.ph" || h.endsWith(".globe.com.ph");
 }
 
 function gobleFields(entry) {
@@ -582,7 +583,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // goble.com twin of snow_refresh.
   if (msg.type === "goble_refresh") {
     chrome.tabs.query(
-      { url: ["*://goble.com/*", "*://*.goble.com/*"] },
+      { url: ["*://globe.com.ph/*", "*://*.globe.com.ph/*"] },
       (tabs) => {
         const list = tabs || [];
         const target =

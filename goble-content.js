@@ -1,13 +1,14 @@
-// goble.com order-page context capture content script.
+// globe.com.ph order-page context capture content script.
 //
-// Runs on goble.com (and subdomains) at document_idle. It reads three values
+// Runs on globe.com.ph (and subdomains such as fsm.globe.com.ph) at
+// document_idle. It reads three values
 // straight off the page the user is looking at, whenever they can be found:
 //   * fwo  — OrderNumber: the first <h6> text inside main.body-content.
 //   * fsid — serviceid: the first digit-bearing text inside the parent of the
 //            <h6> whose text is exactly "Service ID".
 //   * factok — accesstoken: localStorage.getItem("accessToken").
 // Pages that do not expose a field report it as "" (empty), so switching to a
-// different goble.com page clears whatever is no longer visible.
+// different globe.com.ph page clears whatever is no longer visible.
 //
 // Every report mirrors the ServiceNow probe contract: background.js merges
 // per tab, picks the "best" snapshot and hands it to the side panel, which
@@ -16,7 +17,8 @@
 
 (() => {
   const host = location.hostname;
-  const isGoble = host === "goble.com" || host.endsWith(".goble.com");
+  const isGoble =
+    host === "globe.com.ph" || host.endsWith(".globe.com.ph");
   if (!isGoble) return;
 
   let lastSent = "";

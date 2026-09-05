@@ -179,7 +179,7 @@ function baseManualRefresh(btn) {
     if (!foundAny) {
       toast.error(
         "Refresh",
-        "Nothing captured. Open a ServiceNow incident or a goble.com order page and try again."
+        "Nothing captured. Open a ServiceNow incident or a globe.com.ph order page and try again."
       );
     }
   };
@@ -255,7 +255,7 @@ function renderBaseInfoPanel() {
   const hint = document.createElement("div");
   hint.className = "snow-info-hint";
   hint.textContent =
-    "Open a ServiceNow incident or a goble.com order page — values capture automatically.";
+    "Open a ServiceNow incident or a globe.com.ph order page — values capture automatically.";
   root.appendChild(hint);
 
   const rows = document.createElement("div");
@@ -1718,7 +1718,7 @@ function describeMissingPlaceholders(names, inputsLabel) {
   if (snow.length)
     msgs.push("open an incident in ServiceNow so " + fmt(snow) + " can be captured");
   if (goble.length)
-    msgs.push("open an order page on goble.com so " + fmt(goble) + " can be captured");
+    msgs.push("open an order page on globe.com.ph so " + fmt(goble) + " can be captured");
   return "missing value(s): " + msgs.join("; ");
 }
 
