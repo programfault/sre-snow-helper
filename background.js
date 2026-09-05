@@ -454,6 +454,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  // Manual refresh from the Info panel refresh button: always re-poke a live
+  // ServiceNow tab (active one preferred) so stale/empty snapshots are
+  // re-probed right away instead of returning whatever is cached.
+  if (msg.type === "snow_refresh") {
+    chrome.tabs.query({ url: "https://*.service-now.com/*" }, (tabs) => {
+      const list = tabs || [];
+      const target = list.find((t) => t.id === snowActiveTabId) || list[0] || null;
+      if (target) {
+        try {
+          chrome.tabs.sendMessage(target.id, { type: "snow_request_probe" });
+        } catch (_) {}
+      }
+      setTimeout(() => {
+        sendResponse({ ok: true, ctx: snowPickBest() });
+      }, target ? 800 : 0);
+    });
+    return true; // async
+  }
+
   return false;
 });
 

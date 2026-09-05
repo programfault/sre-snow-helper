@@ -56,6 +56,18 @@ const SN_INFO_FIELDS = [
   { key: "sysid", label: "IncidentID" },
 ];
 
+// Long values (CSRF tokens) are truncated to keep each row on one tidy line;
+// the full value is always what gets copied and shown in the title tooltip.
+const SN_INFO_MAX = { number: 40, token: 26, sysid: 40 };
+function snowDisplayValue(raw, key) {
+  const s = raw ? String(raw) : "";
+  const max = SN_INFO_MAX[key] || 40;
+  if (s.length <= max) return s;
+  const mid = max - 1;
+  const head = Math.ceil(mid / 2);
+  return s.slice(0, head) + "…" + s.slice(s.length - (mid - head));
+}
+
 let snowInfoRoot = null; // the currently mounted Info panel (rebuilds on re-render)
 
 function copyToClipboard(text) {
@@ -100,6 +112,36 @@ function refreshSnowContext() {
   } catch (_) {}
 }
 
+// Manual refresh (Info panel refresh button): ask background to force a live
+// ServiceNow tab to re-probe instead of returning a possibly stale snapshot.
+function snowManualRefresh(btn) {
+  btn.classList.add("busy");
+  try {
+    chrome.runtime.sendMessage({ type: "snow_refresh" }, (resp) => {
+      btn.classList.remove("busy");
+      if (chrome.runtime.lastError) return;
+      if (resp && resp.ctx) {
+        snowCtx = resp.ctx;
+        snowRefreshInfo();
+        const has = resp.ctx.token || resp.ctx.sysid || resp.ctx.number;
+        if (!has) {
+          toast.error(
+            "Refresh",
+            "No ServiceNow incident captured. Open an incident page and try again."
+          );
+        }
+      } else {
+        toast.error(
+          "Refresh",
+          "No ServiceNow incident captured. Open an incident page and try again."
+        );
+      }
+    });
+  } catch (_) {
+    btn.classList.remove("busy");
+  }
+}
+
 // Broadcasts from background.js keep the snapshot current while the user
 // switches between ServiceNow tabs / records.
 chrome.runtime.onMessage.addListener((msg) => {
@@ -122,8 +164,18 @@ function renderSnowInfoPanel() {
   const title = document.createElement("span");
   title.className = "snow-info-title";
   title.textContent = "Incident Info";
+
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "snow-refresh-btn";
+  refresh.title = "Refresh incident info";
+  refresh.innerHTML =
+    '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
+  refresh.addEventListener("click", () => snowManualRefresh(refresh));
+
   head.appendChild(icon);
   head.appendChild(title);
+  head.appendChild(refresh);
   root.appendChild(head);
 
   const hint = document.createElement("div");
@@ -194,9 +246,9 @@ function snowRefreshInfo() {
     const valueEl = row.querySelector(".snow-info-value");
     const copyEl = row.querySelector(".snow-copy-btn");
     if (valueEl) {
-      valueEl.textContent = text || "—";
+      valueEl.textContent = text ? snowDisplayValue(text, f.key) : "—";
       valueEl.classList.toggle("empty", !text);
-      valueEl.title = text;
+      valueEl.title = text; // full value on hover
     }
     if (copyEl) copyEl.classList.toggle("disabled", !text);
   });
