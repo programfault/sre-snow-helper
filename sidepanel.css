@@ -26,17 +26,41 @@ body {
   line-height: 1.6;
 }
 
+/* Side panel is a fixed column: header + pinned context strip on top, only
+   the content area below scrolls. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+body {
+  display: flex;
+  flex-direction: column;
+}
+
 /* ---------- Header ---------- */
 .header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px;
   background: var(--card-bg);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
   z-index: 10;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Monitor status dot lives in the header, left of the settings button. */
+.header-actions .monitor-status-dot {
+  width: 9px;
+  height: 9px;
+  cursor: help;
 }
 
 .brand {
@@ -87,7 +111,44 @@ body {
 
 /* ---------- Content ---------- */
 .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---------- Pinned context strip (Base Info) ---------- */
+/* Sits flush under the header and spans the full sidebar width; it never
+   scrolls with .content below it. */
+#baseStrip {
+  flex: 0 0 auto;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+#baseStrip .snow-info {
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+
+#baseStrip .snow-info-head {
+  padding: 8px 14px 6px;
+}
+
+#baseStrip .snow-info-hint {
+  padding: 0 14px 6px;
+}
+
+#baseStrip .snow-info-rows {
+  padding: 2px 0;
+}
+
+#baseStrip .snow-info-row {
+  padding: 3px 14px;
 }
 
 .empty-state {
@@ -563,24 +624,7 @@ body {
   }
 }
 
-/* ---------- Chat Ring Monitor panel (reuses mega-panel + pb-card styling) ---------- */
-.chat-monitor-mega {
-  margin-bottom: var(--spacer-12);
-}
-
-.chat-monitor-head .mega-title {
-  font-size: 14px;
-  font-weight: 700;
-}
-
-/* Right-aligned count pill & toggle switch row share header line. */
-.chat-monitor-head .mega-count {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-}
-
-/* Pulse status dot + switch in header (left of mega-count) */
+/* ---------- Monitor status dot (header signal) ---------- */
 .monitor-status-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--success);
@@ -596,99 +640,6 @@ body {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
-}
-
-.monitor-switch {
-  position: relative; display: inline-block;
-  width: 38px; height: 22px; flex-shrink: 0;
-}
-.monitor-switch input { display: none; }
-.monitor-slider {
-  position: absolute; inset: 0;
-  background: var(--muted); border-radius: 22px;
-  transition: background 0.15s; cursor: pointer;
-}
-.monitor-slider::before {
-  position: absolute; content: "";
-  height: 16px; width: 16px; left: 3px; top: 3px;
-  background: #fff; border-radius: 50%;
-  transition: transform 0.15s;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-}
-.monitor-switch input:checked + .monitor-slider { background: var(--primary); }
-.monitor-switch input:checked + .monitor-slider::before { transform: translateX(16px); }
-
-/* mega-body default 12px all-side padding aligns to playbooks. */
-.chat-monitor-body {
-  gap: var(--spacer-12);
-}
-
-.chat-tab-warning {
-  display: flex; align-items: center; gap: var(--spacer-12);
-  padding: 10px 12px; border-radius: 10px;
-  background: #fff6e6; color: #8a5200;
-  border: 1px solid var(--border);
-  font-size: 12px;
-}
-.chat-tab-info {
-  padding: 8px 12px; border-radius: 10px;
-  background: var(--primary-soft); color: var(--primary);
-  border: 1px solid var(--border);
-  font-size: 12px; font-weight: var(--weight-medium);
-}
-.chat-tab-info-muted {
-  background: var(--code-bg); color: var(--muted);
-}
-
-/* Three stats mini-cards — retained the grid placeholder but tiles now
-   inherit pb-card visual language. Not shown on current UI (stats hidden),
-   but leave the grid + pb-card style so future additions can plug in. */
-.chat-stats-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--spacer-8);
-}
-.chat-stat-card {
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.chat-stats-row .section-label {
-  margin: 0 0 4px;
-}
-
-.chat-rule-status-list {
-  display: flex; flex-direction: column; gap: var(--spacer-8);
-}
-.chat-rule-status-item {
-  display: flex; align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--card-bg);
-}
-.chat-rule-left { flex: 1; min-width: 0; }
-.chat-rule-name {
-  font-weight: var(--weight-medium); font-size: 13px;
-}
-.chat-rule-meta {
-  font-size: 11px; color: var(--muted); margin-top: 2px;
-}
-.chat-rule-badge {
-  font-size: 10px;
-  font-weight: var(--weight-strong);
-  padding: 3px 8px;
-  border-radius: 999px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.state-badge-idle { background: #e8f5ee; color: var(--success); }
-.state-badge-alert { background: #fff0e6; color: var(--warning); }
-.state-badge-off { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
-.chat-rule-empty {
-  border: 1px dashed var(--border);
-  border-radius: 10px;
 }
 
 /* ---------- Services panel ---------- */
@@ -744,7 +695,6 @@ body {
   /* Visible (not hidden) so the absolute Labels dropdown inside can overlap
      the panels below this card. */
   overflow: visible;
-  margin-bottom: 12px;
 }
 
 .snow-info-head {

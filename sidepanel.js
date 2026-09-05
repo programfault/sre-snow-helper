@@ -72,14 +72,15 @@ function gobleVars() {
 //
 // Labels are display-only text — renaming one never affects the underlying
 // placeholder (`gvar`), which is what YAML authors actually reference.
+// Two-letter acronyms like "ID" keep their caps in the display labels.
 
 const BASE_INFO_FIELDS = [
-  { key: "number", src: "snow", label: "incident", gvar: "number" },
-  { key: "token", src: "snow", label: "servicetoken", gvar: "userToken" },
-  { key: "sysid", src: "snow", label: "formid", gvar: "incidentId" },
-  { key: "fwo", src: "goble", label: "OrderNumber", gvar: "f_wo_number" },
-  { key: "fsid", src: "goble", label: "serviceid", gvar: "f_sid" },
-  { key: "factok", src: "goble", label: "accesstoken", gvar: "f_access_token" },
+  { key: "number", src: "snow", label: "Incident", gvar: "number" },
+  { key: "token", src: "snow", label: "Service Token", gvar: "userToken" },
+  { key: "sysid", src: "snow", label: "Form ID", gvar: "incidentId" },
+  { key: "fwo", src: "goble", label: "Order Number", gvar: "f_wo_number" },
+  { key: "fsid", src: "goble", label: "Service ID", gvar: "f_sid" },
+  { key: "factok", src: "goble", label: "Access Token", gvar: "f_access_token" },
 ];
 
 // Snapshot that backs one row: "snow" → snowCtx, "goble" → gobleCtx.
@@ -844,230 +845,17 @@ function persistState() {
   chrome.storage.local.set({ srePanelState: srePanelState });
 }
 
-/* ---------- Chat Ring Monitor (side panel UI) ---------- */
-
-function ringtoneName(ringtones, ringtoneId) {
-  const r = ringtones.find((x) => x.id === ringtoneId);
-  return r ? r.name : "(none)";
-}
-
-function setChatMonitorEnabled(nextEnabled) {
-  chrome.storage.local.get("sreChatMonitor", (d) => {
-    const cur = d.sreChatMonitor || { monitorEnabled: false };
-    cur.monitorEnabled = Boolean(nextEnabled);
-    chrome.storage.local.set({ sreChatMonitor: cur });
-
-    // If turning on but no alive tabs, toast a call-to-action.
-    if (nextEnabled) {
-      try {
-        chrome.runtime.sendMessage({ type: "CHAT_GET_ALIVE_TAB_COUNT" }, (resp) => {
-          const count = resp && typeof resp.aliveTabCount === "number" ? resp.aliveTabCount : 0;
-          if (count === 0) {
-            toast.info(
-              "Monitor enabled",
-              "No chat.google.com tab is open. Open Google Chat to start monitoring."
-            );
-          }
-        });
-      } catch (_) {}
-    }
-  });
-}
-
-function openChatTab() {
-  try {
-    chrome.runtime.sendMessage({ type: "CHAT_OPEN_GCHAT_TAB" });
-  } catch (_) {}
-}
-
-function renderChatMonitorPanel(rules, monitor, ringtones) {
-  const globalEnabled = rules.some((r) => r.enabled);
-  const perRule = monitor.perRule || {};
-  const aliveTabCount = typeof monitor._aliveTabCount === "number" ? monitor._aliveTabCount : -1;
-  const ringtoneLib = ringtones || [];
-
-  // Root uses the same mega-panel class as Playbooks for visual parity.
-  const panel = document.createElement("div");
-  panel.className = "mega-panel chat-monitor-mega";
-
-  // --- Header (mirrors Playbooks mega-header style exactly) ---
-  // Layout: [toggle | title (flex:1) | status-dot | count pill]
-  const head = document.createElement("div");
-  head.className = "mega-header chat-monitor-head";
-
-  const toggle = document.createElement("span");
-  toggle.className = "mega-toggle chat-monitor-toggle";
-  const collapsedKey = "chatMonitor";
-  const isCollapsed = srePanelState.megaCollapsed && srePanelState.megaCollapsed[collapsedKey] === true;
-  if (isCollapsed) panel.classList.add("collapsed");
-  toggle.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>`;
-  head.appendChild(toggle);
-
-  const title = document.createElement("span");
-  title.className = "mega-title";
-  title.style.flex = "1";
-  title.style.minWidth = "0";
-  title.textContent = "Notification";
-  head.appendChild(title);
-
-  // Right side: status dot (first — visually attached to count pill) + count pill.
-  const dot = document.createElement("span");
-  dot.className = "monitor-status-dot";
-  dot.style.marginRight = "6px";
-  if (!globalEnabled) dot.classList.add("off");
-  head.appendChild(dot);
-
-  const ruleCount = rules.length;
-  const enabledCount = rules.filter((r) => r.enabled).length;
-  const count = document.createElement("span");
-  count.className = "mega-count";
-  count.textContent = `${enabledCount} / ${ruleCount} rules`;
-  head.appendChild(count);
-
-  // Collapse toggling
-  head.addEventListener("click", () => {
-    panel.classList.toggle("collapsed");
-    if (!srePanelState.megaCollapsed) srePanelState.megaCollapsed = {};
-    srePanelState.megaCollapsed[collapsedKey] = panel.classList.contains("collapsed");
-    persistState();
-  });
-
-  panel.appendChild(head);
-
-  // --- Body ---
-  const body = document.createElement("div");
-  body.className = "mega-body chat-monitor-body";
-
-  // Top banner: no tab / disabled coverage / enabled info.
-  const anyEnabled = enabledCount > 0;
-  if (anyEnabled && aliveTabCount === 0) {
-    const warn = document.createElement("div");
-    warn.className = "chat-tab-warning";
-    const wLeft = document.createElement("div");
-    wLeft.style.display = "flex"; wLeft.style.alignItems = "center";
-    wLeft.style.gap = "8px"; wLeft.style.flex = "1"; wLeft.style.minWidth = "0";
-    const ic = document.createElement("span");
-    ic.textContent = "⚠";
-    ic.style.fontSize = "14px";
-    ic.style.flexShrink = "0";
-    const wText = document.createElement("div");
-    wText.innerHTML = `<b>No chat.google.com tab is open.</b><br><small>Monitoring starts once a tab is open.</small>`;
-    wLeft.appendChild(ic); wLeft.appendChild(wText);
-    const openBtn = document.createElement("button");
-    openBtn.className = "row-btn";
-    openBtn.textContent = "Open Chat";
-    openBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openChatTab();
-    });
-    warn.appendChild(wLeft); warn.appendChild(openBtn);
-    body.appendChild(warn);
-  } else if (anyEnabled && aliveTabCount > 0) {
-    const info = document.createElement("div");
-    info.className = "chat-tab-info";
-    info.innerHTML = `Monitoring ${aliveTabCount} Google Chat tab${aliveTabCount === 1 ? "" : "s"}.`;
-    body.appendChild(info);
-  } else if (!anyEnabled) {
-    const info = document.createElement("div");
-    info.className = "chat-tab-info chat-tab-info-muted";
-    info.textContent = "No rule is enabled. Turn on a rule below to start monitoring. Create rules in options → Chat Spaces.";
-    body.appendChild(info);
-  }
-
-  // --- Per-rule list: row = (name, match) + state badge + per-rule switch. ---
-  const listLab = document.createElement("div");
-  listLab.className = "section-label";
-  listLab.textContent = "Rules";
-  body.appendChild(listLab);
-
-  const list = document.createElement("div");
-  list.className = "chat-rule-status-list";
-
-  if (rules.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "pb-card chat-rule-empty";
-    empty.style.textAlign = "center";
-    empty.style.padding = "20px 0";
-    empty.style.color = "var(--muted)";
-    empty.style.fontSize = "12px";
-    empty.textContent = "No rules yet. Open options → Chat Spaces to create a rule.";
-    list.appendChild(empty);
-  } else {
-    for (const rule of rules) {
-      const item = document.createElement("div");
-      item.className = "pb-card chat-rule-status-item";
-      item.style.padding = "10px 12px";
-      item.style.gap = "12px";
-      const left = document.createElement("div");
-      left.className = "chat-rule-left";
-      left.style.minWidth = "0";
-      const row1 = document.createElement("div");
-      row1.style.fontWeight = "600";
-      row1.style.fontSize = "13px";
-      row1.textContent = rule.spaceName || rule.matchValue || rule.ruleName || "(unnamed)";
-      const row2 = document.createElement("div");
-      row2.className = "chat-rule-meta";
-      const rtName = ringtoneName(ringtoneLib, rule.ringtoneId);
-      if (rtName && rtName !== "(none)") row2.textContent = "ringtone · " + rtName;
-      left.appendChild(row1); left.appendChild(row2);
-
-      const rightRow = document.createElement("div");
-      rightRow.style.display = "flex";
-      rightRow.style.alignItems = "center";
-      rightRow.style.gap = "10px";
-
-      // State badge (left of switch)
-      const stateBadge = document.createElement("span");
-      let badgeText = "DISABLED", badgeClass = "state-badge-off";
-      if (rule.enabled) {
-        const rs = perRule[rule.id];
-        if (rs && rs.state === "ALERTING") {
-          badgeText = "ALERTING";
-          badgeClass = "state-badge-alert";
-        } else {
-          badgeText = globalEnabled ? "IDLE" : "PAUSED";
-          badgeClass = "state-badge-idle";
-        }
-      }
-      stateBadge.className = `chat-rule-badge ${badgeClass}`;
-      stateBadge.textContent = badgeText;
-      rightRow.appendChild(stateBadge);
-
-      // Per-rule switch (controls rule.enabled).
-      const sw = document.createElement("label");
-      sw.className = "monitor-switch";
-      const swIn = document.createElement("input");
-      swIn.type = "checkbox";
-      swIn.checked = Boolean(rule.enabled);
-      swIn.addEventListener("change", () => toggleRuleEnabled(rule.id, swIn.checked));
-      const swT = document.createElement("span");
-      swT.className = "monitor-slider";
-      sw.appendChild(swIn); sw.appendChild(swT);
-      rightRow.appendChild(sw);
-
-      item.appendChild(left);
-      item.appendChild(rightRow);
-      list.appendChild(item);
-    }
-  }
-  body.appendChild(list);
-
-  panel.appendChild(body);
-  return panel;
-}
-
-// Flip rule.enabled in storage; options page and content scripts read it in real time.
-function toggleRuleEnabled(ruleId, next) {
-  chrome.storage.local.get("sreChatSpaceRules", (d) => {
-    const arr = Array.isArray(d.sreChatSpaceRules) ? d.sreChatSpaceRules : [];
-    const nextArr = arr.map((r) =>
-      r.id === ruleId ? { ...r, enabled: Boolean(next) } : r
-    );
-    chrome.storage.local.set({ sreChatSpaceRules: nextArr });
-  });
-}
-
 /* ---------- Rendering ---------- */
+
+function updateMonitorDot(rules) {
+  const dot = document.getElementById("monitorDot");
+  if (!dot) return;
+  const anyEnabled = (rules || []).some((r) => r.enabled);
+  dot.classList.toggle("off", !anyEnabled);
+  dot.title = anyEnabled
+    ? "Chat monitor on"
+    : "Chat monitor off — enable a rule in options → Notification";
+}
 
 function render(data) {
   const playbooks = data.playbooks || [];
@@ -1075,12 +863,18 @@ function render(data) {
   const servicesYaml = data.servicesYaml || "";
   const services = Y.parseServicesDoc(servicesYaml).services || [];
   const chatRules = data.chatRules || [];
-  const chatMonitor = data.chatMonitor || { monitorEnabled: false, perRule: {}, todayRings: 0, _aliveTabCount: 0 };
+
+  // 1) Header monitor signal — always present, left of the settings button.
+  updateMonitorDot(chatRules);
+
+  // 2) Base Info pinned strip — full sidebar width right under the header.
+  //    It never scrolls; only .content below it scrolls.
+  const stripEl = document.getElementById("baseStrip");
+  stripEl.innerHTML = "";
+  stripEl.appendChild(renderBaseInfoPanel());
+  refreshBaseInfo(); // render current snapshots once the strip is mounted
 
   contentEl.innerHTML = "";
-
-  // 1) Chat Ring Monitor — appears above the other panels.
-  contentEl.appendChild(renderChatMonitorPanel(chatRules, chatMonitor, data.ringtones || []));
 
   if (playbooks.length === 0 && services.length === 0) {
     const empty = document.createElement("div");
@@ -1090,17 +884,8 @@ function render(data) {
     return;
   }
 
-  // The Base Info and Labels cards are non-collapsible and sit directly above
-  // the ServiceNow flows panel (or the Services panel when no flows exist).
-  // Each card owns its own refresh control, so they are mounted as a pair.
-  let contextShown = false;
-  const appendContextPanels = () => {
-    if (contextShown) return;
-    contextShown = true;
-    contentEl.appendChild(renderBaseInfoPanel());
-    contentEl.appendChild(renderBaseTagsPanel());
-    refreshBaseInfo(); // render current snapshots once the panels are mounted
-  };
+  // 3) Labels card — stays in the scrollable area, above the panels below.
+  contentEl.appendChild(renderBaseTagsPanel());
 
   if (playbooks.length > 0) {
     // Shared Common Steps document (params + step map).
@@ -1137,14 +922,12 @@ function render(data) {
 
     mega.appendChild(megaHeader);
     mega.appendChild(megaBody);
-    appendContextPanels();
     contentEl.appendChild(mega);
     snowTagCtxTick();
   }
 
-  // 3) Services mega panel (runs below Playbooks).
+  // 4) Services mega panel (runs below Playbooks).
   if (services.length > 0) {
-    appendContextPanels();
     contentEl.appendChild(renderServicesPanel(services));
   }
 }

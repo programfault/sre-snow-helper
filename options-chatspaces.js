@@ -294,6 +294,25 @@ function renderChatRules() {
 
     const actions = document.createElement("div");
     actions.className = "rule-card-actions";
+
+    // Quick enable/disable right in the saved list (the side panel only shows
+    // a status dot now; real switches live here).
+    const swLabel = document.createElement("label");
+    swLabel.className = "switch";
+    swLabel.title = rule.enabled ? "Click to disable this rule" : "Click to enable this rule";
+    const swInput = document.createElement("input");
+    swInput.type = "checkbox";
+    swInput.checked = Boolean(rule.enabled);
+    const swTrack = document.createElement("span");
+    swTrack.className = "slider-sw";
+    swLabel.appendChild(swInput);
+    swLabel.appendChild(swTrack);
+    swInput.addEventListener("change", () => {
+      rule.enabled = swInput.checked;
+      persistChatRules();
+      renderChatRules();
+    });
+
     const edit = document.createElement("button");
     edit.className = "row-btn";
     edit.textContent = "Edit";
@@ -306,7 +325,7 @@ function renderChatRules() {
       persistChatRules();
       renderChatRules();
     });
-    actions.appendChild(edit); actions.appendChild(del);
+    actions.appendChild(swLabel); actions.appendChild(edit); actions.appendChild(del);
 
     top.appendChild(main); top.appendChild(actions);
     card.appendChild(top);
