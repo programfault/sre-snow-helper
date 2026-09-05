@@ -972,15 +972,12 @@ body {
   color: #fff;
 }
 
-.snow-tags-refresh {
-  border: 1px solid var(--border);
-  background: var(--card-bg);
-  color: var(--muted);
-}
-
-.snow-tags-refresh:hover {
-  color: var(--primary);
-  border-color: var(--primary);
+/* Refresh lives in the section header as a ghost icon button: it reuses the
+   .snow-refresh-btn look (and its .busy spin). Only its disabled state and
+   the spin when loading are defined here. */
+.snow-tags-refresh:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .snow-tags.busy .snow-tags-input {

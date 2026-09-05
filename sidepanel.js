@@ -410,7 +410,7 @@ function buildSnowTagSection() {
   root.className = "snow-tags";
   snowTagRoot = root;
 
-  // --- Header: icon + title + meta (cached count / instance) ---
+  // --- Header: icon + title + meta + refresh icon (right side) ---
   const head = document.createElement("div");
   head.className = "snow-tags-head";
   const icon = document.createElement("span");
@@ -422,12 +422,21 @@ function buildSnowTagSection() {
   title.textContent = "Labels";
   const meta = document.createElement("span");
   meta.className = "snow-tags-meta";
+  const refreshBtn = document.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className = "snow-refresh-btn snow-tags-refresh";
+  refreshBtn.title = "Reload the label list from ServiceNow";
+  refreshBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
+  // meta has margin-left:auto so the whole right group (meta + refresh icon)
+  // is pushed to the far right edge of the header.
   head.appendChild(icon);
   head.appendChild(title);
   head.appendChild(meta);
+  head.appendChild(refreshBtn);
   root.appendChild(head);
 
-  // --- Row: combo input + Add + Refresh ---
+  // --- Row: combo input + Add ---
   const row = document.createElement("div");
   row.className = "snow-tags-row";
 
@@ -450,15 +459,8 @@ function buildSnowTagSection() {
   addBtn.textContent = "Add";
   addBtn.title = "Attach the selected labels to the current incident";
 
-  const refreshBtn = document.createElement("button");
-  refreshBtn.type = "button";
-  refreshBtn.className = "snow-tags-btn snow-tags-refresh";
-  refreshBtn.textContent = "Refresh";
-  refreshBtn.title = "Reload the label list from ServiceNow";
-
   row.appendChild(combo);
   row.appendChild(addBtn);
-  row.appendChild(refreshBtn);
   root.appendChild(row);
 
   const chips = document.createElement("div");
@@ -579,6 +581,7 @@ function buildSnowTagSection() {
 
   const setBusy = (busy) => {
     root.classList.toggle("busy", busy);
+    refreshBtn.classList.toggle("busy", busy); // spins the header icon (snow-spin)
     addBtn.disabled = busy || !(snowCtx && snowCtx.instance) || snowTagSelected.size === 0;
     refreshBtn.disabled = busy || !(snowCtx && snowCtx.instance && snowCtx.token);
   };
@@ -615,8 +618,7 @@ function buildSnowTagSection() {
       );
       return;
     }
-    setBusy(true);
-    refreshBtn.textContent = "…";
+    setBusy(true); // .busy on the header icon spins it
     snowFetchLabels()
       .then((labels) => {
         snowSaveCache(labels);
@@ -629,7 +631,6 @@ function buildSnowTagSection() {
         toast.error("Labels refresh failed", String((err && err.message) || err));
       })
       .finally(() => {
-        refreshBtn.textContent = "Refresh";
         setBusy(false);
         repaintAll();
       });

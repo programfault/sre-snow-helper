@@ -283,6 +283,47 @@
     return null;
   }
 
+  function snowFindMoreToggle() {
+    for (const d of snowTagDocs()) {
+      try {
+        const btn = d.getElementById("toggleMoreOptions");
+        if (btn) return { doc: d, btn };
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  // The label field sits inside the form's "More Options" section, which is
+  // collapsed by default: the .tagit-new widget is NOT in the DOM until that
+  // section is expanded. So before typing labels we make sure the input is
+  // actually rendered — if it isn't, click #toggleMoreOptions and poll until
+  // the widget appears (or give up with a clear error instead of failing on a
+  // missing element).
+  async function snowWaitForTagInput(timeoutMs) {
+    const limit = timeoutMs || 10000;
+    const start = Date.now();
+    const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+    let found = snowFindTagInput();
+    let clicks = 0;
+    while (!found && clicks < 2 && Date.now() - start < limit) {
+      const more = snowFindMoreToggle();
+      if (more) {
+        try {
+          more.btn.click();
+          clicks++;
+        } catch (_) {}
+      }
+      // Poll after the click so lazy-rendered widgets get time to appear;
+      // only click again if it still hasn't shown up.
+      const pollUntil = Date.now() + (clicks === 1 ? 2500 : 3500);
+      while (Date.now() < pollUntil && !found) {
+        await pause(200);
+        found = snowFindTagInput();
+      }
+    }
+    return found;
+  }
+
   function snowSetInputValue(input, value) {
     const proto =
       input instanceof HTMLTextAreaElement
@@ -311,9 +352,12 @@
   }
 
   async function snowAddTagsToForm(names) {
-    const found = snowFindTagInput();
+    const found = await snowWaitForTagInput();
     if (!found) {
-      return { error: "No label (tag-it) input was found on this ServiceNow page." };
+      return {
+        error:
+          "The label (tag-it) input is not rendered. Tried expanding 'More Options' (#toggleMoreOptions) but the field never appeared — reload the incident form and try again.",
+      };
     }
     const { doc, input } = found;
     const w = doc.defaultView || window;
