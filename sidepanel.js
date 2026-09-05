@@ -473,6 +473,10 @@ function buildSnowTagSection() {
 
   // --- Repaint helpers (touch only the label subtree, never the whole page) ---
   const hideDrop = () => drop.classList.remove("open");
+  // True while we programmatically refocus the input right after a pick, so the
+  // focus handler skips reopening the dropdown. The next real focus (clicking
+  // the field again, typing) reopens it as usual.
+  let suppressFocusDrop = false;
 
   const filterCandidates = () => {
     const filter = input.value.trim().toLowerCase();
@@ -487,8 +491,14 @@ function buildSnowTagSection() {
     if (snowTagSelected.has(key)) return;
     snowTagSelected.set(key, l.name);
     input.value = "";
-    repaintAll();
-    input.focus();
+    // Most incidents need only one label (rarely two), so close the dropdown
+    // right after a pick instead of leaving it open over the chips. Focus stays
+    // on the input: typing again immediately shows the filtered candidates.
+    repaintNoDrop();
+    if (document.activeElement !== input) {
+      suppressFocusDrop = true;
+      input.focus();
+    }
   };
 
   const repaintMeta = () => {
@@ -538,9 +548,13 @@ function buildSnowTagSection() {
       x.className = "snow-tag-x";
       x.textContent = "×";
       x.title = "Remove " + name;
+      // Keep focus on the search input while pressing the remove button: this
+      // prevents the blur → dropdown flash and lets the user delete several
+      // chips in a row without re-focusing.
+      x.addEventListener("mousedown", (e) => e.preventDefault());
       x.addEventListener("click", () => {
         snowTagSelected.delete(sid);
-        repaintAll();
+        repaintNoDrop();
       });
       chip.appendChild(txt);
       chip.appendChild(x);
@@ -579,6 +593,15 @@ function buildSnowTagSection() {
     snowTagCtxTick();
   };
 
+  // Quiet repaint used after picking or removing a chip: refresh everything
+  // EXCEPT the candidate list so the dropdown stays closed (repaintAll would
+  // reopen it because remaining candidates still match the empty filter).
+  const repaintNoDrop = () => {
+    hideDrop();
+    repaintChips();
+    snowTagCtxTick();
+  };
+
   const setBusy = (busy) => {
     root.classList.toggle("busy", busy);
     refreshBtn.classList.toggle("busy", busy); // spins the header icon (snow-spin)
@@ -588,11 +611,20 @@ function buildSnowTagSection() {
 
   // --- Input / dropdown events ---
   input.addEventListener("input", repaintDrop);
-  input.addEventListener("focus", repaintDrop);
+  input.addEventListener("focus", () => {
+    if (suppressFocusDrop) {
+      suppressFocusDrop = false;
+      return;
+    }
+    repaintDrop();
+  });
   input.addEventListener("blur", () => setTimeout(hideDrop, 160));
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.keyCode === 13) {
       e.preventDefault();
+      // Only confirm the top candidate while the dropdown is visible, so Enter
+      // never blindly attaches an invisible label after a pick closed it.
+      if (!drop.classList.contains("open")) return;
       const top = filterCandidates()[0];
       if (top) selectLabel(top);
     } else if ((e.key === "Backspace" || e.keyCode === 8) && !input.value) {
@@ -600,7 +632,7 @@ function buildSnowTagSection() {
       const last = keys[keys.length - 1];
       if (last !== undefined) {
         snowTagSelected.delete(last);
-        repaintAll();
+        repaintNoDrop(); // keep the dropdown closed while deleting
       }
     } else if (e.key === "Escape" || e.keyCode === 27) {
       hideDrop();
@@ -679,7 +711,7 @@ function buildSnowTagSection() {
         settle();
         toast.success("Labels added", "Added " + added + " label(s) to the current incident.");
         snowTagSelected.clear();
-        repaintAll();
+        repaintNoDrop(); // close the dropdown after a completed Add
       });
     } catch (e) {
       settle();
