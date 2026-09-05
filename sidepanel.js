@@ -123,6 +123,9 @@ function snowManualRefresh(btn) {
       if (resp && resp.ctx) {
         snowCtx = resp.ctx;
         snowRefreshInfo();
+        // The Incident Info refresh doubles as the label-list refresh: re-fetch
+        // the picker's candidates whenever the incident snapshot is refreshed.
+        refreshSnowLabelCache();
         const has = resp.ctx.token || resp.ctx.sysid || resp.ctx.number;
         if (!has) {
           toast.error(
@@ -229,6 +232,10 @@ function renderSnowInfoPanel() {
   });
   root.appendChild(rows);
 
+  // Labels picker: sits inside the Incident Info card right below the
+  // IncidentID row, sharing the card's refresh button (see snowManualRefresh).
+  root.appendChild(buildSnowTagSection());
+
   return root;
 }
 
@@ -258,28 +265,25 @@ function snowRefreshInfo() {
   snowTagCtxTick();
 }
 
-/* ---------- ServiceNow Labels (tag) management ---------- */
+/* ---------- ServiceNow Labels (tag) picker ---------- */
 //
-// Lives at the top of the ServiceNow flows mega-body. Three moving parts:
-//   * Refresh  — fetch the label table of the current instance (same query the
-//                user used manually: group_listLIKE a fixed group sys_id), page
-//                through it, then persist the result under chrome.storage.local
-//                key sreSnowLabels so later side-panel renders read the cache
-//                instead of hitting ServiceNow again. Pressing Refresh is the
-//                only path that re-fetches.
-//   * input/dropdown — auto-suggest / filter over the cached candidates; an
-//                item can be picked multiple times (multi-select chips).
+// Rendered inside the Incident Info panel, right under the IncidentID row.
+// Two moving parts:
+//   * input/dropdown — auto-suggest / filter over the cached label list of the
+//                current instance; picked labels become chips (multi-select).
 //   * Add      — batch-attach every picked label to the current incident by
 //                asking the active ServiceNow tab's content script to simulate
 //                typing each name into the page's tag-it control.
-// The whole section sits inside the ServiceNow flows panel, so it follows the
-// panel's collapse state.
+// The label list is cached under chrome.storage.local key sreSnowLabels after
+// a fetch; that fetch is driven by the Incident Info refresh button (the only
+// path that re-hits ServiceNow).
 
 const SN_LABEL_GROUP = "bcd9d8ac47243a1831c140d4116d43e5"; // fixed group filter from the original script
 const SN_LABELS_KEY = "sreSnowLabels";
 
 let snowLabelCache = null; // { at, instance, labels: [{ name, sys_id }] }
 let snowTagRoot = null; // mounted .snow-tags section (rebuilt on render)
+let snowTagApi = null; // refreshUi() hook of the currently mounted tag section
 const snowTagSelected = new Map(); // label sys_id -> name, queued for the next Add
 
 function normalizeLabelCache(raw) {
@@ -392,14 +396,28 @@ async function snowFetchLabels() {
   return out;
 }
 
+// Re-fetch the label list for the captured instance and repaint the picker.
+// Called by the Incident Info refresh button (the picker no longer owns a
+// refresh control of its own). No-op while no instance/token is captured.
+function refreshSnowLabelCache() {
+  const c = snowCtx || {};
+  if (!c.instance || !c.token) return;
+  snowFetchLabels()
+    .then((labels) => {
+      snowSaveCache(labels);
+      if (snowTagApi) snowTagApi.refreshUi();
+    })
+    .catch((err) => {
+      toast.error("Labels", String((err && err.message) || "Label refresh failed."));
+    });
+}
+
 // Toggle Add / Refresh availability from the current incident context. Called
 // on every snow_ctx change and whenever the section repaints.
 function snowTagCtxTick() {
   if (!snowTagRoot || !snowTagRoot.isConnected) return;
   const okCtx = !!(snowCtx && snowCtx.instance && snowCtx.token);
-  const refresh = snowTagRoot.querySelector(".snow-tags-refresh");
   const add = snowTagRoot.querySelector(".snow-tags-add");
-  if (refresh && !snowTagRoot.classList.contains("busy")) refresh.disabled = !okCtx;
   if (add && !snowTagRoot.classList.contains("busy")) {
     add.disabled = !okCtx || snowTagSelected.size === 0;
   }
@@ -409,32 +427,6 @@ function buildSnowTagSection() {
   const root = document.createElement("div");
   root.className = "snow-tags";
   snowTagRoot = root;
-
-  // --- Header: icon + title + meta + refresh icon (right side) ---
-  const head = document.createElement("div");
-  head.className = "snow-tags-head";
-  const icon = document.createElement("span");
-  icon.className = "snow-tags-icon";
-  icon.innerHTML =
-    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/></svg>';
-  const title = document.createElement("span");
-  title.className = "snow-tags-title";
-  title.textContent = "Labels";
-  const meta = document.createElement("span");
-  meta.className = "snow-tags-meta";
-  const refreshBtn = document.createElement("button");
-  refreshBtn.type = "button";
-  refreshBtn.className = "snow-refresh-btn snow-tags-refresh";
-  refreshBtn.title = "Reload the label list from ServiceNow";
-  refreshBtn.innerHTML =
-    '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
-  // meta has margin-left:auto so the whole right group (meta + refresh icon)
-  // is pushed to the far right edge of the header.
-  head.appendChild(icon);
-  head.appendChild(title);
-  head.appendChild(meta);
-  head.appendChild(refreshBtn);
-  root.appendChild(head);
 
   // --- Row: combo input + Add ---
   const row = document.createElement("div");
@@ -467,10 +459,6 @@ function buildSnowTagSection() {
   chips.className = "snow-tags-chips";
   root.appendChild(chips);
 
-  const hint = document.createElement("div");
-  hint.className = "snow-tags-hint";
-  root.appendChild(hint);
-
   // --- Repaint helpers (touch only the label subtree, never the whole page) ---
   const hideDrop = () => drop.classList.remove("open");
   // True while we programmatically refocus the input right after a pick, so the
@@ -499,35 +487,6 @@ function buildSnowTagSection() {
       suppressFocusDrop = true;
       input.focus();
     }
-  };
-
-  const repaintMeta = () => {
-    const inst = (snowCtx && snowCtx.instance) || "";
-    const labels =
-      snowLabelCache && snowLabelCache.instance === inst ? snowLabelCache.labels : [];
-    const parts = [];
-    parts.push(labels.length ? labels.length + " label" + (labels.length === 1 ? "" : "s") : "0 labels");
-    if (inst) parts.push(String(inst).replace(/\.service-now\.com$/, ""));
-    meta.textContent = parts.join(" · ");
-    meta.title = inst || "";
-  };
-
-  const repaintHint = () => {
-    const inst = (snowCtx && snowCtx.instance) || "";
-    const okCtx = !!(snowCtx && snowCtx.instance && snowCtx.token);
-    let msg = "";
-    if (!okCtx) {
-      msg = "Open a ServiceNow incident page, then press Refresh to load the label list.";
-    } else if (
-      !snowLabelCache ||
-      snowLabelCache.instance !== inst ||
-      snowLabelCache.labels.length === 0
-    ) {
-      msg = "No labels loaded yet — press Refresh to fetch them from " + inst + ".";
-    } else {
-      msg = "Pick one or more labels below, then press Add to attach them to the current incident.";
-    }
-    hint.textContent = msg;
   };
 
   const repaintChips = () => {
@@ -582,20 +541,24 @@ function buildSnowTagSection() {
       });
       drop.appendChild(item);
     });
-    drop.classList.add("open");
+    // Never auto-open the dropdown: show it only while the user is actively
+    // picking (the input is focused or has text) or it is already visible.
+    // Passive repaints — initial render, Info refresh, ctx broadcasts — must
+    // not pop the list open over the panels below.
+    const wantsOpen =
+      document.activeElement === input ||
+      input.value.trim().length > 0 ||
+      drop.classList.contains("open");
+    drop.classList.toggle("open", wantsOpen);
   };
 
   const repaintAll = () => {
-    repaintMeta();
-    repaintHint();
     repaintChips();
-    repaintDrop();
     snowTagCtxTick();
   };
 
-  // Quiet repaint used after picking or removing a chip: refresh everything
-  // EXCEPT the candidate list so the dropdown stays closed (repaintAll would
-  // reopen it because remaining candidates still match the empty filter).
+  // Quiet repaint used after picking/removing a chip or finishing an Add:
+  // refresh chips & the Add button but keep the dropdown closed.
   const repaintNoDrop = () => {
     hideDrop();
     repaintChips();
@@ -604,9 +567,18 @@ function buildSnowTagSection() {
 
   const setBusy = (busy) => {
     root.classList.toggle("busy", busy);
-    refreshBtn.classList.toggle("busy", busy); // spins the header icon (snow-spin)
     addBtn.disabled = busy || !(snowCtx && snowCtx.instance) || snowTagSelected.size === 0;
-    refreshBtn.disabled = busy || !(snowCtx && snowCtx.instance && snowCtx.token);
+  };
+
+  // Exposed to the Incident Info refresh button so it can repaint the picker
+  // after a label cache refresh. repaintDrop is gated, so this never pops the
+  // dropdown open on its own.
+  snowTagApi = {
+    refreshUi: () => {
+      repaintChips();
+      repaintDrop();
+      snowTagCtxTick();
+    },
   };
 
   // --- Input / dropdown events ---
@@ -619,6 +591,11 @@ function buildSnowTagSection() {
     repaintDrop();
   });
   input.addEventListener("blur", () => setTimeout(hideDrop, 160));
+  // Clicking the already-focused field reopens the list (e.g. to add a second
+  // label after a pick closed it).
+  input.addEventListener("click", () => {
+    if (!drop.classList.contains("open")) repaintDrop();
+  });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.keyCode === 13) {
       e.preventDefault();
@@ -638,34 +615,6 @@ function buildSnowTagSection() {
       hideDrop();
       input.blur();
     }
-  });
-
-  // --- Refresh: fetch from ServiceNow and persist to the cache ---
-  refreshBtn.addEventListener("click", () => {
-    const c = snowCtx || {};
-    if (!c.instance || !c.token) {
-      toast.error(
-        "Labels",
-        "Open a ServiceNow incident page so the instance and UserToken can be captured, then press Refresh."
-      );
-      return;
-    }
-    setBusy(true); // .busy on the header icon spins it
-    snowFetchLabels()
-      .then((labels) => {
-        snowSaveCache(labels);
-        toast.success(
-          "Labels refreshed",
-          labels.length + " label(s) loaded from " + c.instance
-        );
-      })
-      .catch((err) => {
-        toast.error("Labels refresh failed", String((err && err.message) || err));
-      })
-      .finally(() => {
-        setBusy(false);
-        repaintAll();
-      });
   });
 
   // --- Add: batch-attach every picked label via the page's tag-it widget ---
@@ -1057,10 +1006,6 @@ function render(data) {
 
     const megaBody = document.createElement("div");
     megaBody.className = "mega-body";
-
-    // Labels (tag) section sits at the very top of the ServiceNow flows body so
-    // it collapses together with the panel.
-    megaBody.appendChild(buildSnowTagSection());
 
     playbooks.forEach((pb) => {
       megaBody.appendChild(renderPlaybookCard(pb, common));
