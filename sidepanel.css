@@ -110,14 +110,29 @@ body {
 }
 
 /* ---------- Content ---------- */
+/* The scrollable area hosts full-width, square-cornered panels so the whole
+   side panel reads as one continuous white surface (no side gutters). */
 .content {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px;
+  padding: 0 0 14px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
+}
+
+/* Content panels span edge to edge, matching the Base Info strip above.
+   A bottom rule separates stacked panels; internals keep their own chrome. */
+.content > .mega-panel,
+.content > .snow-info.snow-info-tags {
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.content > .empty-state {
+  padding: 32px 14px;
 }
 
 /* ---------- Pinned context strip (Base Info) ---------- */
