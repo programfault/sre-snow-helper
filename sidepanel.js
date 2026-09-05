@@ -1556,9 +1556,16 @@ function renderServiceCard(item, idx) {
   steps.forEach((svc, i) => stepsContainer.appendChild(renderServiceStepRow(svc, i)));
   body.appendChild(stepsContainer);
 
-  // ---- Run ----
+  // ---- Dry Run / Run ----
   const execRow = document.createElement("div");
   execRow.className = "execute-row";
+  const dryBtn = document.createElement("button");
+  dryBtn.className = "btn-execute btn-dryrun";
+  dryBtn.textContent = "Dry Run";
+  dryBtn.addEventListener("click", () => {
+    dryRunServiceCard(card, steps, inputs);
+  });
+  execRow.appendChild(dryBtn);
   const runBtn = document.createElement("button");
   runBtn.className = "btn-execute";
   runBtn.textContent = "Run";
@@ -1629,11 +1636,15 @@ function renderServiceStepRow(svc, idx) {
   return row;
 }
 
-// Perform one HTTP call. Returns { failed, status?, error?, url?, out }.
-async function runServiceStep(svc, values) {
+// Build the exact request that runServiceStep would send — method, URL, headers
+// and body with every placeholder resolved — WITHOUT fetching. Shared by the
+// real execution path and the Dry Run preview so what you preview is exactly
+// what would be sent. Returns { method, url, headers, hasBody, bodyObj,
+// bodyJson, isSnow, leftover }.
+function prepareServiceStep(svc, values) {
   // Context placeholders from both snapshots resolve automatically: ServiceNow
-  // (${incidentId}, ${userToken}, ${number}, ${instance}) and goble.com order
-  // page (${f_wo_number}, ${f_sid}, ${f_access_token}). Explicit service
+  // (${incidentId}, ${userToken}, ${number}, ${instance}) and globe.com.ph
+  // order page (${f_wo_number}, ${f_sid}, ${f_access_token}). Explicit service
   // inputs win over context on a name clash.
   const effective = Object.assign({}, snowVars(), gobleVars(), values || {});
   const url = Y.resolvePlaceholders(svc.endpoint, effective);
@@ -1642,22 +1653,14 @@ async function runServiceStep(svc, values) {
   for (const [k, v] of Object.entries(rawHeaders || {})) {
     if (v !== null && v !== undefined) headers[k] = String(v);
   }
-  const init = { method: svc.method || "GET", headers };
-  const hasBody = svc.method !== "GET" && svc.body !== null && svc.body !== undefined;
+  const method = svc.method || "GET";
+  const hasBody = method !== "GET" && svc.body !== null && svc.body !== undefined;
+  let bodyObj = null;
   if (hasBody) {
-    const body = Y.resolveTemplate(svc.body, effective);
+    bodyObj = Y.resolveTemplate(svc.body, effective);
     if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
   }
-
-  // Leftover ${name}s mean an input was left empty or an alias never resolved.
-  const leftOver = collectUnresolved([url, headers, hasBody ? init.body : null]);
-  if (leftOver.length > 0) {
-    return {
-      failed: true,
-      error: describeMissingPlaceholders(leftOver, "in the service inputs"),
-    };
-  }
+  const bodyJson = bodyObj === null ? null : JSON.stringify(bodyObj);
 
   // Universal ServiceNow layer: any request aimed at *.service-now.com is sent
   // with the browser's login cookies (credentials: include) and signed with
@@ -1667,15 +1670,93 @@ async function runServiceStep(svc, values) {
     host = new URL(url).hostname;
   } catch (_) {}
   const isSnow = /(^|\.)service-now\.com$/i.test(host);
-  if (isSnow) {
-    init.credentials = "include";
-    if (!headers["X-UserToken"] && snowCtx && snowCtx.token) {
-      headers["X-UserToken"] = String(snowCtx.token);
-    }
+  if (isSnow && !headers["X-UserToken"] && snowCtx && snowCtx.token) {
+    headers["X-UserToken"] = String(snowCtx.token);
   }
 
+  // Leftover ${name}s mean an input was left empty, a context page is not
+  // open, or an alias from an earlier step has no value yet.
+  const leftover = collectUnresolved([url, headers, hasBody ? bodyJson : null]);
+  return { method, url, headers, hasBody, bodyObj, bodyJson, isSnow, leftover };
+}
+
+// Format a prepared request for the Dry Run toast.
+function describePreparedRequest(req, aliasOwner) {
+  const lines = [];
+  lines.push(`${req.method} ${req.url || "(no endpoint)"}`);
+  if (req.isSnow) {
+    lines.push("Note: browser session cookies (credentials: include) will be sent to *.service-now.com");
+  }
+  lines.push("");
+  lines.push("Headers:");
+  const entries = Object.entries(req.headers);
+  lines.push(entries.length ? entries.map(([k, v]) => `${k}: ${v}`).join("\n") : "(none)");
+  lines.push("");
+  lines.push("Body:");
+  if (req.hasBody) lines.push(JSON.stringify(req.bodyObj, null, 2));
+  else lines.push("(none)");
+
+  // Placeholders that will be filled by an earlier step's captured output
+  // cannot be previewed (nothing is fetched) — say so instead of implying the
+  // request is broken.
+  const owned = req.leftover.filter((n) => aliasOwner[n]);
+  if (owned.length) {
+    const nums = [...new Set(owned.map((n) => aliasOwner[n]))].sort().join(", ");
+    lines.push("");
+    lines.push(`Note: ${owned.map((n) => "${" + n + "}").join(", ")} will be filled from the response of step ${nums} at run time.`);
+  }
+  const missing = req.leftover.filter((n) => !aliasOwner[n]);
+  if (missing.length) {
+    lines.push("");
+    lines.push("MISSING — " + describeMissingPlaceholders(missing, "in the service inputs"));
+  }
+  return lines.join("\n");
+}
+
+// Dry Run for a services card: resolve every step into the request that would
+// be sent (endpoint, headers, body) and preview it as toasts — nothing is
+// actually fetched. Steps that consume a previous step's output are flagged:
+// the value only exists after a real Run.
+function dryRunServiceCard(card, steps, inputs) {
+  const values = {};
+  inputs.forEach((inp) => {
+    const el = card.querySelector(`[data-svc-var="${cssEscape(inp.var)}"]`);
+    values[inp.var] = el ? el.value : "";
+  });
+  const aliasOwner = {};
+  steps.forEach((svc, i) => {
+    (svc.outputs || []).forEach((o) => {
+      if (!(o.alias in aliasOwner)) aliasOwner[o.alias] = i + 1;
+    });
+  });
+  toast.info("Dry run", `${steps.length} step(s) · nothing was sent`);
+  steps.forEach((svc, i) => {
+    const req = prepareServiceStep(svc, values);
+    const name = svc.name || svc.endpoint || "(unnamed)";
+    const title = `Dry run · Step ${i + 1}/${steps.length} · ${name}`;
+    const text = describePreparedRequest(req, aliasOwner);
+    const missing = req.leftover.filter((n) => !aliasOwner[n]);
+    if (missing.length) toast.error(title, text);
+    else toast.success(title, text);
+  });
+}
+
+// Perform one HTTP call. Returns { failed, status?, error?, url?, out }.
+async function runServiceStep(svc, values) {
+  const req = prepareServiceStep(svc, values);
+  if (req.leftover.length > 0) {
+    return {
+      failed: true,
+      error: describeMissingPlaceholders(req.leftover, "in the service inputs"),
+    };
+  }
+
+  const init = { method: req.method, headers: req.headers };
+  if (req.isSnow) init.credentials = "include";
+  if (req.hasBody) init.body = req.bodyJson;
+
   try {
-    const resp = await fetch(url, init);
+    const resp = await fetch(req.url, init);
     const text = await resp.text();
     let json = null;
     try {
@@ -1686,7 +1767,7 @@ async function runServiceStep(svc, values) {
       const v = Y.queryPath(json, o.path);
       if (v !== undefined) out[o.alias] = v;
     });
-    return { failed: !resp.ok, status: resp.status, ok: resp.ok, json, text, out, url };
+    return { failed: !resp.ok, status: resp.status, ok: resp.ok, json, text, out, url: req.url };
   } catch (err) {
     return { failed: true, error: String((err && err.message) || err) };
   }
@@ -1732,8 +1813,10 @@ async function executeServiceCard(card, steps, inputs, runBtn) {
     values[inp.var] = el ? el.value : "";
   });
 
+  const dryBtn = card.querySelector(".btn-dryrun");
   runBtn.disabled = true;
   runBtn.textContent = "Running…";
+  if (dryBtn) dryBtn.disabled = true;
   const total = steps.length;
   try {
     for (let i = 0; i < total; i++) {
@@ -1755,6 +1838,7 @@ async function executeServiceCard(card, steps, inputs, runBtn) {
   } finally {
     runBtn.disabled = false;
     runBtn.textContent = "Run";
+    if (dryBtn) dryBtn.disabled = false;
   }
 }
 
