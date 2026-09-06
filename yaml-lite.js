@@ -77,14 +77,41 @@
 
   function stripQuotes(v) {
     const t = String(v).trim();
-    if (
-      t.length >= 2 &&
-      ((t[0] === '"' && t[t.length - 1] === '"') ||
-        (t[0] === "'" && t[t.length - 1] === "'"))
-    ) {
-      return t.slice(1, -1);
+    if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
+      // Double-quoted: resolve escape sequences (\n, \t, \\, \", ...)
+      return unescapeDoubleQuoted(t.slice(1, -1));
+    }
+    if (t.length >= 2 && t[0] === "'" && t[t.length - 1] === "'") {
+      // Single-quoted: the only escape is '' -> '
+      return t.slice(1, -1).replace(/''/g, "'");
     }
     return t;
+  }
+
+  // Resolve YAML double-quoted escape sequences into the characters they
+  // represent. Without this, "line1\nline2" stays as the two literal
+  // characters backslash-n instead of a newline — so a body value sent to a
+  // server would contain the text "\n" rather than an actual line break.
+  // Covers the common escapes; anything unrecognized keeps the char after the
+  // backslash (lenient, like most YAML loaders).
+  function unescapeDoubleQuoted(s) {
+    return s.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_m, esc) => {
+      switch (esc[0]) {
+        case "n": return "\n";
+        case "r": return "\r";
+        case "t": return "\t";
+        case "b": return "\b";
+        case "f": return "\f";
+        case "v": return "\v";
+        case "0": return "\0";
+        case "\\": return "\\";
+        case '"': return '"';
+        case "/": return "/";
+        case "u": return String.fromCharCode(parseInt(esc.slice(1), 16));
+        case "x": return String.fromCharCode(parseInt(esc.slice(1), 16));
+        default: return esc;
+      }
+    });
   }
 
   /* ---------- Top-level scalar parsing ---------- */
@@ -599,10 +626,17 @@
     if (s === "") return null;
     if (
       s.length >= 2 &&
-      ((s[0] === '"' && s[s.length - 1] === '"') ||
-        (s[0] === "'" && s[s.length - 1] === "'"))
+      s[0] === '"' && s[s.length - 1] === '"'
     ) {
-      return s.slice(1, -1);
+      // Double-quoted: resolve escape sequences (\n, \t, \\, \", etc.)
+      return unescapeDoubleQuoted(s.slice(1, -1));
+    }
+    if (
+      s.length >= 2 &&
+      s[0] === "'" && s[s.length - 1] === "'"
+    ) {
+      // Single-quoted: the only escape is '' -> '
+      return s.slice(1, -1).replace(/''/g, "'");
     }
     if (s.indexOf("${") !== -1) return s;
     const low = s.toLowerCase();
@@ -724,11 +758,84 @@
   function parseNestedYaml(yamlText) {
     const toks = [];
     const rawLines = String(yamlText || "").replace(/\r\n/g, "\n").split("\n");
-    for (const rawLine of rawLines) {
+
+    // Block scalar indicator after a key, e.g. `comments: |` or `body: >-`.
+    // Captures: key, style (| or >), chomp (+ / - / ""), optional indent digit.
+    const blockIndicatorRe = /^([A-Za-z_][\w-]*):[ \t]*([|>])([+-]?)([0-9]*)[ \t]*(?:#.*)?$/;
+
+    for (let li = 0; li < rawLines.length; li++) {
+      const rawLine = rawLines[li];
       if (/^\s*$/.test(rawLine)) continue;
       const indent = (rawLine.match(/^[ \t]*/) || [""])[0].length;
       const text = stripYamlComment(rawLine.trim());
       if (!text) continue;
+
+      // --- Block scalar: key: | or key: > (possibly with + / - chomping) ---
+      const bm = text.match(blockIndicatorRe);
+      if (bm) {
+        const key = bm[1];
+        const style = bm[2]; // "|" (literal) or ">" (folded)
+        const chomp = bm[3]; // "+", "-", or "" (clip)
+        const explicitIndent = bm[4] ? parseInt(bm[4], 10) : 0;
+
+        // Gather every subsequent line indented strictly deeper than the key.
+        // Blank lines are kept (they separate paragraphs for folded style).
+        const blockLines = [];
+        let contentIndent = explicitIndent > 0 ? indent + explicitIndent : null;
+        li++;
+        while (li < rawLines.length) {
+          const bl = rawLines[li];
+          if (/^\s*$/.test(bl)) {
+            blockLines.push("");
+            li++;
+            continue;
+          }
+          const blIndent = (bl.match(/^[ \t]*/) || [""])[0].length;
+          if (blIndent <= indent) {
+            // This line belongs to the parent context — rewind so the outer
+            // loop picks it up.
+            li--;
+            break;
+          }
+          if (contentIndent === null) contentIndent = blIndent;
+          // Strip the base content indentation but keep any deeper relative
+          // indent (e.g. for nested code blocks inside a literal scalar).
+          blockLines.push(bl.slice(contentIndent));
+          li++;
+        }
+
+        let value = blockLines.join("\n");
+
+        // Chomping: how to treat trailing newlines.
+        //   "" (clip) -> keep a single trailing newline
+        //   "-" (strip) -> remove all trailing newlines
+        //   "+" (keep) -> preserve every trailing newline
+        if (chomp === "-") {
+          value = value.replace(/\n+$/, "");
+        } else if (chomp === "") {
+          value = value.replace(/\n+$/, "\n");
+        }
+        // "+" leaves everything as-is.
+
+        // Folded style (>): single newlines become spaces; blank lines (two+
+        // newlines) become a single newline. This matches standard YAML >.
+        if (style === ">") {
+          value = value
+            .replace(/\n{2,}/g, "\u0000")
+            .replace(/\n/g, " ")
+            .replace(/\u0000/g, "\n");
+          // Fold leaves a trailing space after the last line; normalise it.
+          if (chomp === "") value = value.replace(/[ \t]+$/, "");
+        }
+
+        // Re-emit as an inline double-quoted scalar. JSON.stringify escapes
+        // newlines, quotes and backslashes, and coerceScalar's
+        // unescapeDoubleQuoted path reverses them — so the final value holds
+        // real newline characters, not the literal two chars "\n".
+        toks.push({ indent, text: `${key}: ${JSON.stringify(value)}` });
+        continue;
+      }
+
       toks.push({ indent, text });
     }
     if (toks.length === 0) return null;
