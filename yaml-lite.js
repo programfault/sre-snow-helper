@@ -168,14 +168,66 @@
     else if (yaml[i] === "\r" && yaml[i + 1] === "\n") i += 2;
     // Children must be indented strictly deeper than the form header line.
     const childIndent = actualIndent + 2;
+    const lines = yaml.slice(i).split(/\r?\n/);
     const childRe = new RegExp(
-      `^([ \\t]{${childIndent},})([A-Za-z_][\\w-]*):[ \\t]*(.*?)[ \\t]*$`,
-      "gm"
+      `^([ \\t]{${childIndent},})([A-Za-z_][\\w-]*):[ \\t]*(.*?)[ \\t]*$`
     );
-    const sub = yaml.slice(i);
-    let m;
-    while ((m = childRe.exec(sub)) !== null) {
-      form[stripQuotes(m[2])] = stripQuotes(m[3]);
+
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      const m = line.match(childRe);
+      if (!m) {
+        // Blank line: skip (content may continue after it).
+        if (/^\s*$/.test(line)) continue;
+        // A line indented shallower than the fields' minimum ends the block.
+        const lineIndent = (line.match(/^[ \t]*/) || [""])[0].length;
+        if (lineIndent < childIndent) break;
+        continue; // deeper but not a key:value line — ignore
+      }
+      const key = stripQuotes(m[2]);
+      const rawVal = m[3];
+      // Block scalar indicator, e.g. `work_notes: |` or `body: >-`.
+      const bm = rawVal.match(/^([|>])([+-]?)([0-9]*)$/);
+      if (bm) {
+        const style = bm[1]; // "|" literal | ">" folded
+        const chomp = bm[2]; // "+" / "-" / "" (clip)
+        const explicitIndent = bm[3] ? parseInt(bm[3], 10) : 0;
+        const keyIndent = m[1].length;
+        // Collect every line indented deeper than this key line.
+        let contentIndent = explicitIndent > 0 ? keyIndent + explicitIndent : null;
+        const blockLines = [];
+        li++;
+        while (li < lines.length) {
+          const bl = lines[li];
+          if (/^\s*$/.test(bl)) {
+            blockLines.push("");
+            li++;
+            continue;
+          }
+          const blIndent = (bl.match(/^[ \t]*/) || [""])[0].length;
+          if (blIndent <= keyIndent) {
+            li--; // belongs to a sibling key or the parent — rewind
+            break;
+          }
+          if (contentIndent === null) contentIndent = blIndent;
+          blockLines.push(bl.slice(contentIndent));
+          li++;
+        }
+        let value = blockLines.join("\n");
+        // Chomping: clip keeps one trailing \n, strip removes all, keep leaves all.
+        if (chomp === "-") value = value.replace(/\n+$/, "");
+        else if (chomp === "") value = value.replace(/\n+$/, "\n");
+        if (style === ">") {
+          value = value
+            .replace(/\n{2,}/g, "\u0000")
+            .replace(/\n/g, " ")
+            .replace(/\u0000/g, "\n");
+          if (chomp === "") value = value.replace(/[ \t]+$/, "");
+        }
+        form[key] = value;
+      } else {
+        form[key] = stripQuotes(rawVal);
+      }
     }
     return form;
   }
