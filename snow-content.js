@@ -98,6 +98,46 @@
     return "";
   }
 
+  // Caller reference field — DOM fallback for when the MAIN-world g_form probe
+  // can't reach a live g_form (e.g. Next Experience shells that don't expose it
+  // as a window global). ServiceNow renders the caller as two inputs:
+  //   sys_display.incident.caller_id  -> the human-readable name (shown)
+  //   incident.caller_id              -> the referenced user's sys_id (hidden)
+  // Returns { name, sysid }; empty strings when the field isn't on the page.
+  function readCallerDom(doc) {
+    const out = { name: "", sysid: "" };
+    if (!doc) return out;
+    const nameSels = [
+      'input[name="sys_display.incident.caller_id"]',
+      'input[id="sys_display.incident.caller_id"]',
+      '[data-table="incident"] [data-field="caller_id"] input',
+      '[data-field="caller_id"] input',
+    ];
+    const sysidSels = [
+      'input[name="incident.caller_id"]',
+      'input[id="incident.caller_id"]',
+    ];
+    for (const sel of nameSels) {
+      try {
+        const el = doc.querySelector(sel);
+        if (el && (el.value || el.getAttribute("value"))) {
+          out.name = String(el.value || el.getAttribute("value")).trim();
+          break;
+        }
+      } catch (_) {}
+    }
+    for (const sel of sysidSels) {
+      try {
+        const el = doc.querySelector(sel);
+        if (el && (el.value || el.getAttribute("value"))) {
+          out.sysid = String(el.value || el.getAttribute("value")).trim();
+          break;
+        }
+      } catch (_) {}
+    }
+    return out;
+  }
+
   // When running in the top frame we can also peek at the form iframe that the
   // classic UI mounts (same-origin), so a single probe can report number even
   // if only the shell frame executes.
@@ -129,8 +169,12 @@
       if (sysid) ctx.sysid = sysid;
       const number = readIncidentNumber(doc);
       if (number) ctx.number = number;
-      // caller captured by the MAIN-world g_form probe (only present on form
-      // pages); merged into the report so background can expose the globals.
+      // Caller reference: prefer the MAIN-world g_form probe value; fall back
+      // to the DOM inputs (sys_display.incident.caller_id / incident.caller_id)
+      // when g_form isn't reachable — common on Next Experience shells.
+      const domCaller = readCallerDom(doc);
+      if (!callerSysid && domCaller.sysid) callerSysid = domCaller.sysid;
+      if (!callerName && domCaller.name) callerName = domCaller.name;
       if (callerSysid) ctx.callerSysid = callerSysid;
       if (callerName) ctx.callerName = callerName;
     }
