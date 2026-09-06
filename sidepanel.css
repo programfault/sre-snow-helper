@@ -110,6 +110,11 @@ body {
   color: var(--text);
 }
 
+/* Refresh button in the header: spin the icon while a re-probe is in flight. */
+.icon-btn.busy svg {
+  animation: snow-spin 0.8s linear infinite;
+}
+
 /* ---------- Content ---------- */
 /* The scrollable area hosts full-width, square-cornered panels so the whole
    side panel reads as one continuous white surface (no side gutters). */

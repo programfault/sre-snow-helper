@@ -19,6 +19,7 @@ let srePanelState = { megaCollapsed: {}, cardCollapsed: {} };
 const contentEl = document.getElementById("content");
 const openOptionsBtn = document.getElementById("openOptions");
 const envInfoBtn = document.getElementById("envInfoBtn");
+const envRefreshBtn = document.getElementById("envRefreshBtn");
 const envPopoverEl = document.getElementById("envPopover");
 
 // ServiceNow incident context — mirrors the LIVE snapshot chosen by
@@ -262,6 +263,59 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeEnvPopover();
 });
+
+/* Header refresh button — force a re-probe of the ACTIVE tab.
+ *
+ * Unlike the Options page's Refresh (which has to guess which tab to poke when
+ * several are open), this button runs in the side panel that sits alongside the
+ * page the user is actually looking at. background.js resolves snow_refresh /
+ * goble_refresh against the active tab, so the returned live snapshot is
+ * guaranteed to be the page in view. The poke also refreshes the "last"
+ * snapshot (snowLastCtx / gobleLastCtx), so the Options Environment page picks
+ * up the same values on its next load. */
+function refreshEnvFromActiveTab() {
+  if (!envRefreshBtn || envRefreshBtn.classList.contains("busy")) return;
+  envRefreshBtn.classList.add("busy");
+
+  const pokeSnow = new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "snow_refresh" }, (resp) => {
+        if (!chrome.runtime.lastError && resp) {
+          snowCtx = resp.ctx || null;
+        }
+        resolve();
+      });
+    } catch (_) {
+      resolve();
+    }
+  });
+
+  const pokeGoble = new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "goble_refresh" }, (resp) => {
+        if (!chrome.runtime.lastError && resp) {
+          gobleCtx = resp.ctx || null;
+        }
+        resolve();
+      });
+    } catch (_) {
+      resolve();
+    }
+  });
+
+  Promise.all([pokeSnow, pokeGoble]).then(() => {
+    envRefreshBtn.classList.remove("busy");
+    snowTagCtxTick();
+    // Show the result: open the popover if it isn't already, so the user sees
+    // the freshly captured values right away.
+    if (envPopoverEl.classList.contains("hidden")) openEnvPopover();
+    else refreshEnvValues();
+  });
+}
+
+if (envRefreshBtn) {
+  envRefreshBtn.addEventListener("click", refreshEnvFromActiveTab);
+}
 
 buildEnvPopover();
 
