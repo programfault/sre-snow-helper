@@ -33,6 +33,11 @@
   const origin = location.origin;
   let token = null;
   let lastSent = "";
+  // caller reference field captured by the MAIN-world g_form probe; declared
+  // here so collect() can read them without a ReferenceError before the first
+  // postMessage arrives.
+  let callerSysid = null;
+  let callerName = null;
 
   /* ---------- URL / DOM readers (isolated world, shared DOM) ---------- */
 
