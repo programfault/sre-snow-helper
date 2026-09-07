@@ -412,7 +412,7 @@ function renderBaseTagsPanel() {
     '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/></svg>';
   const title = document.createElement("span");
   title.className = "snow-info-title";
-  title.textContent = "Labels";
+  title.textContent = "Tags";
 
   const refresh = document.createElement("button");
   refresh.type = "button";
@@ -428,6 +428,193 @@ function renderBaseTagsPanel() {
   card.appendChild(head);
   card.appendChild(buildSnowTagSection());
   return card;
+}
+
+/* ---------- Mongo Query template card ---------- */
+//
+// A card below the Tags card: pick one of the configured query templates
+// (Options → Query Templates), fill the inputs that are rendered from its
+// ${placeholder} tokens, then Generate copies the substituted query to the
+// clipboard. Each distinct placeholder becomes one input whose hint is the
+// inner text of the placeholder; the same placeholder reused twice is filled
+// from that single input.
+const QUERY_PLACEHOLDER_RE = /\$\{([^{}]*)\}/g;
+
+// Distinct placeholder keys, first-occurrence order.
+function queryPlaceholderKeys(text) {
+  const keys = [];
+  const re = new RegExp(QUERY_PLACEHOLDER_RE.source, "g");
+  let m;
+  while ((m = re.exec(String(text || ""))) !== null) {
+    const key = m[1].trim();
+    if (key && !keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+let querySelId = null; // selected template id (survives full re-renders)
+let queryValues = {}; // placeholder key -> last typed value
+
+function renderQueryTemplatePanel(templates) {
+  const card = document.createElement("div");
+  card.className = "snow-info snow-info-query";
+
+  const head = document.createElement("div");
+  head.className = "snow-info-head";
+  const icon = document.createElement("span");
+  icon.className = "snow-info-icon";
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10.5 4.5a1 1 0 0 1 1-1H15a1 1 0 0 1 1 1v3.5h-1V5h-3.5v3.5h-1v-4zm2 6h1v6h-1v-6zm-5.5 4a1 1 0 0 1 1-1h1v1H8v3.5H6.5v-3.5zm13 5.5a1 1 0 0 1-1 1h-4.5a1 1 0 0 1-1-1v-1h1v.5h4v-1h1v.5zm-11.5-6.5v-1h5v1h-5zm1.5-4.5v-2h2v2h-2z"/></svg>';
+  const title = document.createElement("span");
+  title.className = "snow-info-title";
+  title.textContent = "Query";
+  head.appendChild(icon);
+  head.appendChild(title);
+
+  const body = document.createElement("div");
+  body.className = "snow-query-body";
+
+  // --- control row: template picker + Generate ---
+  const ctl = document.createElement("div");
+  ctl.className = "snow-query-ctl";
+
+  const select = document.createElement("select");
+  select.className = "snow-query-select";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Select a template…";
+  select.appendChild(ph);
+  let selected = templates.find((t) => t.id === querySelId) || null;
+  templates.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = t.name || "(unnamed template)";
+    if (t.id === querySelId) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.addEventListener("change", () => {
+    querySelId = select.value || null;
+    queryValues = {};
+    rebuildFields();
+  });
+  ctl.appendChild(select);
+
+  const generate = document.createElement("button");
+  generate.type = "button";
+  generate.className = "snow-query-btn";
+  generate.textContent = "Generate";
+  generate.addEventListener("click", () => {
+    if (!selected) {
+      toast.info("Query", "Pick a query template first.");
+      return;
+    }
+    generateQuery(selected);
+  });
+  ctl.appendChild(generate);
+  body.appendChild(ctl);
+
+  // --- dynamic placeholder inputs ---
+  const fields = document.createElement("div");
+  fields.className = "snow-query-fields";
+  body.appendChild(fields);
+
+  const status = document.createElement("div");
+  status.className = "snow-query-status";
+  status.textContent = "Generated template is copied to the clipboard.";
+  body.appendChild(status);
+
+  function rebuildFields() {
+    fields.innerHTML = "";
+    selected = templates.find((t) => t.id === querySelId) || null;
+    if (!selected) return;
+    const keys = queryPlaceholderKeys(selected.template);
+    if (!keys.length) {
+      const note = document.createElement("div");
+      note.className = "snow-query-note";
+      note.textContent = "This template has no placeholders — Generate copies it as-is.";
+      fields.appendChild(note);
+      return;
+    }
+    keys.forEach((key) => {
+      const row = document.createElement("div");
+      row.className = "snow-query-field";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "snow-query-input";
+      input.placeholder = key;
+      input.value = queryValues[key] || "";
+      input.addEventListener("input", () => {
+        queryValues[key] = input.value;
+      });
+      const hint = document.createElement("span");
+      hint.className = "snow-query-hint";
+      hint.textContent = "${" + key + "}";
+      row.appendChild(input);
+      row.appendChild(hint);
+      fields.appendChild(row);
+    });
+  }
+  rebuildFields();
+
+  function generateQuery(tpl) {
+    const source = String(tpl.template || "");
+    const keys = queryPlaceholderKeys(source);
+    let out = "";
+    let last = 0;
+    const re = new RegExp(QUERY_PLACEHOLDER_RE.source, "g");
+    let m;
+    while ((m = re.exec(source)) !== null) {
+      out += source.slice(last, m.index);
+      const key = m[1].trim();
+      out += keys.includes(key) ? String(queryValues[key] || "") : m[0];
+      last = re.lastIndex;
+    }
+    out += source.slice(last);
+    copyTextToClipboard(out).then((ok) => {
+      if (ok) {
+        toast.success("Query", "Generated query copied to the clipboard.");
+        status.classList.add("shown");
+        clearTimeout(status._t);
+        status._t = setTimeout(() => status.classList.remove("shown"), 2200);
+      } else {
+        toast.error("Query", "Could not access the clipboard — copy it manually below.");
+        status.textContent = out;
+        status.classList.add("shown");
+      }
+    });
+  }
+
+  card.appendChild(head);
+  card.appendChild(body);
+  return card;
+}
+
+function copyTextToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard
+      .writeText(text)
+      .then(() => true)
+      .catch(() => fallbackCopyText(text));
+  }
+  return fallbackCopyText(text);
+}
+
+function fallbackCopyText(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return Promise.resolve(ok);
+  } catch (_) {
+    return Promise.resolve(false);
+  }
 }
 
 /* ---------- ServiceNow Labels (tag) picker ---------- */
@@ -868,6 +1055,7 @@ function loadState(cb) {
       "sreRingtones",
       "sreChatMonitor",
       "sreSnowLabels",
+      "sreQueryTemplates",
     ],
     (data) => {
       // Panel state
@@ -892,6 +1080,10 @@ function loadState(cb) {
         chatRules: Array.isArray(data.sreChatSpaceRules) ? data.sreChatSpaceRules : [],
         ringtones: Array.isArray(data.sreRingtones) ? data.sreRingtones : [],
         chatMonitor: data.sreChatMonitor || { monitorEnabled: false, perRule: {}, todayRings: 0, todayDate: "" },
+        queryTemplates: (Array.isArray(data.sreQueryTemplates)
+          ? data.sreQueryTemplates
+          : []
+        ).filter((t) => t && typeof t === "object"),
       });
     }
   );
@@ -919,13 +1111,17 @@ function render(data) {
   const servicesYaml = data.servicesYaml || "";
   const services = Y.parseServicesDoc(servicesYaml).services || [];
   const chatRules = data.chatRules || [];
+  const queryTemplates = data.queryTemplates || [];
 
   // 1) Header monitor signal — always present, left of the settings button.
   updateMonitorDot(chatRules);
 
   contentEl.innerHTML = "";
 
-  if (playbooks.length === 0 && services.length === 0) {
+  const hasFlows = playbooks.length > 0 || services.length > 0;
+  const hasTemplates = queryTemplates.length > 0;
+
+  if (!hasFlows && !hasTemplates) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.innerHTML = "No ServiceNow flows or services configured.<br>Open options to create one.";
@@ -933,9 +1129,20 @@ function render(data) {
     return;
   }
 
-  // 2) Labels card — stays in the scrollable area, above the panels below.
-  contentEl.appendChild(renderBaseTagsPanel());
-  snowTagCtxTick(); // initial Add-button state from whatever ctx we hold
+  // 2) Tags card — needs a captured ServiceNow context to be useful, so it is
+  //    only shown when there is flow content below it.
+  if (hasFlows) {
+    contentEl.appendChild(renderBaseTagsPanel());
+    snowTagCtxTick(); // initial Add-button state from whatever ctx we hold
+  }
+
+  // 3) Query-template card — directly below the Tags card. Shown whenever any
+  //    templates exist, even when no flows/services are configured yet.
+  if (hasTemplates) {
+    contentEl.appendChild(renderQueryTemplatePanel(queryTemplates));
+  }
+
+  if (!hasFlows) return; // nothing below except the Query card
 
   if (playbooks.length > 0) {
     // Shared Common Steps document (params + step map).
@@ -2064,6 +2271,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     "sreServices",
     "sreForms",
     "srePanelState",
+    "sreQueryTemplates",
   ];
   if (structuralKeys.some((k) => changes[k])) {
     loadState((data) => render(data));

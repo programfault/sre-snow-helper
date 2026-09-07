@@ -718,6 +718,54 @@
       display: none;
     }
     .env-empty.visible { display: block; }
+
+    /* ---------- Query Templates tab ---------- */
+    .qtm-name-input {
+      width: 100%;
+      border: 1px solid transparent;
+      background: transparent;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      padding: 2px 4px;
+      border-radius: 6px;
+      box-sizing: border-box;
+    }
+    .qtm-name-input:hover { background: var(--row-hover); }
+    .qtm-name-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      background: #fff;
+    }
+    .qtm-name-input::placeholder { color: var(--muted); font-style: italic; }
+    .qtm-body { padding: 0 14px 14px; }
+    .pb-card.collapsed .qtm-body { display: none; }
+    .qtm-editor { margin-top: 10px; }
+    .qtm-text {
+      width: 100%;
+      min-height: 120px;
+      box-sizing: border-box;
+      resize: vertical;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+    }
+    .qtm-text:focus { outline: none; border-color: var(--primary); }
+    .qtm-hints {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .qtm-placeholder-count code { font-family: "SFMono-Regular", Consolas, monospace; }
   </style>
 </head>
 <body>
@@ -728,6 +776,7 @@
     <div class="tabs">
       <button class="tab top active" data-tab="servicenow">ServiceNow</button>
       <button class="tab top" data-tab="services">Services</button>
+      <button class="tab top" data-tab="querytemplates">Query Templates</button>
       <button class="tab top" data-tab="notification">Notification</button>
       <button class="tab top" data-tab="env">Environment</button>
     </div>
@@ -842,6 +891,17 @@ state,State,Resolved,6</pre>
       </div>
     </div>
 
+    <!-- Query Templates page: reusable Mongo query snippets. A template may
+         contain ${placeholder} tokens — the side panel renders one input per
+         distinct placeholder and substitutes the typed values on Generate. -->
+    <div class="tab-page hidden" id="page-querytemplates">
+      <div class="form-toolbar">
+        <span class="note">Reusable Mongo query snippets shown in the side panel's <b>Query</b> card. Write <code>${input hint}</code> anywhere you want the user to fill in a value — the text inside the braces becomes the input's hint and is replaced when the panel's <b>Generate</b> is clicked (each distinct placeholder renders one input; repeating the same placeholder is filled everywhere).</span>
+        <button class="btn btn-primary" id="addQueryTemplate">+ Add template</button>
+      </div>
+      <div class="pb-list" id="queryTemplateList"></div>
+    </div>
+
     <!-- Environment variables page: persistent snapshot of the last visited
          ServiceNow / FSM order page (shared field defs come from env-defs.js,
          the same file the side panel info popover uses). -->
@@ -873,6 +933,7 @@ state,State,Resolved,6</pre>
   <script src="options-common.js"></script>
   <script src="options-services.js"></script>
   <script src="options-forms.js"></script>
+  <script src="options-querytemplates.js"></script>
   <script src="options-init.js"></script>
   <script src="options-ringtones.js"></script>
   <script src="options-chatspaces.js"></script>
