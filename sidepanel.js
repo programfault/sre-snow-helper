@@ -533,16 +533,8 @@ function renderQueryTemplatePanel(templates) {
   fields.className = "snow-query-fields";
   body.appendChild(fields);
 
-  // Result preview: the substituted query is shown here (and copied). It stays
-  // visible until the next Generate/selection so the values are easy to verify.
-  const preview = document.createElement("div");
-  preview.className = "snow-query-preview hidden";
-  body.appendChild(preview);
-
   function rebuildFields() {
     fields.innerHTML = "";
-    preview.classList.add("hidden");
-    preview.classList.remove("err");
     selected = templates.find((t) => t.id === querySelId) || null;
     if (!selected) return;
     const keys = queryPlaceholderKeys(selected.template);
@@ -634,15 +626,10 @@ function renderQueryTemplatePanel(templates) {
     }
     out += source.slice(last);
     copyTextToClipboard(out).then((ok) => {
-      preview.classList.remove("hidden");
-      preview.classList.toggle("err", !ok);
-      preview.textContent = ok
-        ? "Generated & copied to the clipboard:\n\n" + out
-        : "Clipboard unavailable — copy the query below:\n\n" + out;
       if (ok) {
         toast.success("Query", "Generated query copied to the clipboard.");
       } else {
-        toast.error("Query", "Could not access the clipboard — see the query below.");
+        toast.error("Query", "Clipboard is unavailable in this context.");
       }
     });
   }
