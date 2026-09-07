@@ -22,16 +22,16 @@ const envInfoBtn = document.getElementById("envInfoBtn");
 const envRefreshBtn = document.getElementById("envRefreshBtn");
 const envPopoverEl = document.getElementById("envPopover");
 
-// ServiceNow incident context — mirrors the LIVE snapshot chosen by
-// background.js (the ACTIVE tab while it is on a service-now.com page; null the
-// moment the user switches away). Populated on load and kept fresh by the
+// ServiceNow incident context — mirrors the LAST non-empty capture kept by
+// background.js (same data source as Options → Environment). Replaced whenever
+// a fresh ServiceNow snapshot lands; kept when the user switches to tabs that
+// are not on a ServiceNow page. Populated on load and kept fresh by the
 // "snow_ctx" broadcasts below.
 let snowCtx = null;
 
 // FSM order-page context — same shape as snowCtx but captured from the FSM
-// page the user is looking at (fsm.globe.com.ph / gsmgt-prod.gobetel.com, see
-// goble-content.js). Populated on load and kept fresh by the "goble_ctx"
-// broadcasts below.
+// page (fsm.globe.com.ph / gsmgt-prod.gobetel.com, see goble-content.js).
+// Same "keep last" semantics as snowCtx above.
 let gobleCtx = null;
 
 // Global context variables that are satisfied automatically instead of being
@@ -77,11 +77,11 @@ function gobleVars() {
 
 /* ---------- Header environment-variable popover ---------- */
 //
-// Live context of the ACTIVE tab: the ServiceNow incident snapshot (snowCtx)
-// plus the FSM order-page snapshot (gobleCtx). background.js broadcasts
-// snow_ctx / goble_ctx as ACTIVE-RELATIVE values — null the instant the user
-// switches away from that source's page — so the rows here mirror the tab the
-// user is actually looking at and clear the moment they leave it.
+// The rows mirror the background's LAST captured snapshot per source — the
+// same "keep last" data the Options → Environment page reads. Switching to a
+// non-source tab (chat, docs, another site…) therefore keeps the last values
+// visible instead of wiping them; only a fresh capture on a ServiceNow / FSM
+// page replaces them. This keeps the two surfaces consistent.
 //
 // Shows label + truncated value + copy button only (no ${gvar}); the Options
 // Environment page carries the full reference list. Field definitions come
@@ -170,7 +170,7 @@ function buildEnvPopover() {
   const empty = document.createElement("div");
   empty.className = "ctx-popover-empty";
   empty.textContent =
-    "Open a ServiceNow incident or an FSM order page — values appear here live and clear when you leave the page.";
+    "Open a ServiceNow incident or an FSM order page to capture values. The last captured values are kept until the next capture replaces them.";
   envPopoverEl.appendChild(empty);
 }
 
@@ -209,8 +209,8 @@ function openEnvPopover() {
   if (!envPopoverEl.classList.contains("hidden")) return;
   envPopoverEl.classList.remove("hidden");
   refreshEnvValues();
-  // Ask the background for the freshest live snapshot right as it opens, so a
-  // just-switched tab renders immediately instead of waiting for a broadcast.
+  // Re-pull the background's most recent snapshots right as it opens so values
+  // render immediately instead of waiting for a broadcast.
   refreshSnowContext();
   refreshGobleContext();
 }
@@ -280,8 +280,11 @@ function refreshEnvFromActiveTab() {
   const pokeSnow = new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage({ type: "snow_refresh" }, (resp) => {
-        if (!chrome.runtime.lastError && resp) {
-          snowCtx = resp.ctx || null;
+        // Only a real capture replaces the shown values — if the active tab is
+        // not on a ServiceNow page the background answers null, and we keep the
+        // last captured snapshot (same keep-last rule as Options → Environment).
+        if (!chrome.runtime.lastError && resp && resp.ok && resp.ctx) {
+          snowCtx = resp.ctx;
         }
         resolve();
       });
@@ -293,8 +296,8 @@ function refreshEnvFromActiveTab() {
   const pokeGoble = new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage({ type: "goble_refresh" }, (resp) => {
-        if (!chrome.runtime.lastError && resp) {
-          gobleCtx = resp.ctx || null;
+        if (!chrome.runtime.lastError && resp && resp.ok && resp.ctx) {
+          gobleCtx = resp.ctx;
         }
         resolve();
       });
@@ -347,13 +350,15 @@ function legacyCopy(text) {
   return ok;
 }
 
-// Ask the background broker for the freshest LIVE ServiceNow snapshot and
-// apply it (may legitimately be null — the active tab left ServiceNow).
+// Pull the background's most recent ServiceNow snapshot into snowCtx. The
+// background keeps the LAST non-empty capture (the same source the Options
+// Environment page reads) rather than an active-tab-relative value — so
+// switching away from the incident page never wipes these rows.
 function refreshSnowContext() {
   try {
-    chrome.runtime.sendMessage({ type: "snow_get_current" }, (resp) => {
+    chrome.runtime.sendMessage({ type: "snow_get_last" }, (resp) => {
       if (chrome.runtime.lastError) return;
-      snowCtx = (resp && resp.ctx) || null;
+      snowCtx = (resp && resp.ok && resp.ctx) || null;
       refreshEnvValues();
       snowTagCtxTick();
     });
@@ -363,26 +368,31 @@ function refreshSnowContext() {
 // Same, for the FSM order-page snapshot.
 function refreshGobleContext() {
   try {
-    chrome.runtime.sendMessage({ type: "goble_get_current" }, (resp) => {
+    chrome.runtime.sendMessage({ type: "goble_get_last" }, (resp) => {
       if (chrome.runtime.lastError) return;
-      gobleCtx = (resp && resp.ctx) || null;
+      gobleCtx = (resp && resp.ok && resp.ctx) || null;
       refreshEnvValues();
     });
   } catch (_) {}
 }
 
-// Broadcasts from background.js keep both live snapshots current: snow_ctx /
-// goble_ctx become null once the active tab is no longer on that source's
-// pages, which clears the header popover rows right away.
+// Broadcasts from background.js refresh both snapshots the moment a new capture
+// lands. Live "null" payloads mean the user simply switched to a non-source tab
+// — they are ignored so previously captured values stay visible, matching the
+// Options Environment page's keep-last behaviour.
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg) return;
   if (msg.type === "snow_ctx") {
-    snowCtx = msg.ctx || null;
-    refreshEnvValues();
-    snowTagCtxTick();
+    if (msg.ctx) {
+      snowCtx = msg.ctx;
+      refreshEnvValues();
+      snowTagCtxTick();
+    }
   } else if (msg.type === "goble_ctx") {
-    gobleCtx = msg.ctx || null;
-    refreshEnvValues();
+    if (msg.ctx) {
+      gobleCtx = msg.ctx;
+      refreshEnvValues();
+    }
   }
 });
 
