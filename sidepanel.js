@@ -452,8 +452,22 @@ function queryPlaceholderKeys(text) {
   return keys;
 }
 
+// Turn a multi-value input into a Mongo $in-ready list of quoted strings:
+//   "1 2 3"  -> "1","2","3"     "1,2,3" -> "1","2","3"
+// Separators: spaces, commas (half/full width), semicolons, tabs, newlines.
+function formatIdList(raw) {
+  const parts = String(raw || "")
+    .split(/[,\uFF0C;；\t\r\n]+|\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts
+    .map((p) => '"' + p.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"')
+    .join(",");
+}
+
 let querySelId = null; // selected template id (survives full re-renders)
 let queryValues = {}; // placeholder key -> last typed value
+let queryFmt = {}; // placeholder key -> multi-value formatting on (default true)
 
 function renderQueryTemplatePanel(templates) {
   const card = document.createElement("div");
@@ -495,6 +509,7 @@ function renderQueryTemplatePanel(templates) {
   select.addEventListener("change", () => {
     querySelId = select.value || null;
     queryValues = {};
+    queryFmt = {};
     rebuildFields();
   });
   ctl.appendChild(select);
@@ -550,10 +565,34 @@ function renderQueryTemplatePanel(templates) {
       input.addEventListener("input", () => {
         queryValues[key] = input.value;
       });
+
+      // Multi-value formatting toggle — ON by default. When ON, Generate first
+      // turns the typed value into a quoted list, e.g. `1 2 3` → `"1","2","3"`.
+      const fmtOn = queryFmt[key] !== false;
+      const fmtBtn = document.createElement("button");
+      fmtBtn.type = "button";
+      fmtBtn.className = "snow-query-fmt" + (fmtOn ? " on" : "");
+      fmtBtn.title =
+        'Format multi-value input on Generate (1 2 3 → "1","2","3"). Currently ' +
+        (fmtOn ? "ON" : "OFF");
+      fmtBtn.setAttribute("aria-pressed", fmtOn ? "true" : "false");
+      fmtBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 17h3l2-4V7H5v6h3l-2 4zm8 0h3l2-4V7h-6v6h3l-2 4z"/></svg>';
+      fmtBtn.addEventListener("click", () => {
+        const next = queryFmt[key] === false; // toggle: off -> on / on -> off
+        queryFmt[key] = next;
+        fmtBtn.classList.toggle("on", next);
+        fmtBtn.setAttribute("aria-pressed", next ? "true" : "false");
+        fmtBtn.title =
+          'Format multi-value input on Generate (1 2 3 → "1","2","3"). Currently ' +
+          (next ? "ON" : "OFF");
+      });
+
       const hint = document.createElement("span");
       hint.className = "snow-query-hint";
       hint.textContent = "${" + key + "}";
       row.appendChild(input);
+      row.appendChild(fmtBtn);
       row.appendChild(hint);
       fields.appendChild(row);
     });
@@ -566,9 +605,16 @@ function renderQueryTemplatePanel(templates) {
     const source = String(tpl.template || "");
     // Read values straight from the live inputs (source of truth at click
     // time); module queryValues only backfills keys with no rendered input.
+    // Rows whose format toggle is ON (the default) get the multi-value input
+    // turned into a quoted list first — `1 2 3` → `"1","2","3"`.
     const vals = {};
-    fields.querySelectorAll(".snow-query-input").forEach((inp) => {
-      if (inp.dataset.key) vals[inp.dataset.key] = inp.value;
+    fields.querySelectorAll(".snow-query-field").forEach((row) => {
+      const inp = row.querySelector(".snow-query-input");
+      if (!inp || !inp.dataset.key) return;
+      const key = inp.dataset.key;
+      let value = inp.value;
+      if (queryFmt[key] !== false) value = formatIdList(value);
+      vals[key] = value;
     });
     let out = "";
     let last = 0;

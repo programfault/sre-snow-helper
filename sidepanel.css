@@ -1207,6 +1207,33 @@ body {
   color: var(--muted);
 }
 
+.snow-query-fmt {
+  appearance: none;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.snow-query-fmt:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.snow-query-fmt.on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
 .snow-query-hint {
   flex-shrink: 0;
   font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
