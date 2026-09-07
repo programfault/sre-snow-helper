@@ -1215,15 +1215,25 @@ body {
   white-space: nowrap;
 }
 
-.snow-query-status {
+.snow-query-preview {
   margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
   font-size: 11.5px;
-  color: var(--success);
-  opacity: 0;
-  transition: opacity 0.15s;
-  word-break: break-all;
+  line-height: 1.55;
+  color: var(--text);
   white-space: pre-wrap;
+  word-break: break-all;
 }
 
-.snow-query-status.shown { opacity: 1; }
+.snow-query-preview.hidden { display: none; }
+
+.snow-query-preview.err {
+  background: #fdecec;
+  border-color: #f6bfbf;
+  color: #e34d4d;
+}
 

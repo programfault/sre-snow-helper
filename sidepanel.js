@@ -508,7 +508,7 @@ function renderQueryTemplatePanel(templates) {
       toast.info("Query", "Pick a query template first.");
       return;
     }
-    generateQuery(selected);
+    generateQuery();
   });
   ctl.appendChild(generate);
   body.appendChild(ctl);
@@ -518,13 +518,16 @@ function renderQueryTemplatePanel(templates) {
   fields.className = "snow-query-fields";
   body.appendChild(fields);
 
-  const status = document.createElement("div");
-  status.className = "snow-query-status";
-  status.textContent = "Generated template is copied to the clipboard.";
-  body.appendChild(status);
+  // Result preview: the substituted query is shown here (and copied). It stays
+  // visible until the next Generate/selection so the values are easy to verify.
+  const preview = document.createElement("div");
+  preview.className = "snow-query-preview hidden";
+  body.appendChild(preview);
 
   function rebuildFields() {
     fields.innerHTML = "";
+    preview.classList.add("hidden");
+    preview.classList.remove("err");
     selected = templates.find((t) => t.id === querySelId) || null;
     if (!selected) return;
     const keys = queryPlaceholderKeys(selected.template);
@@ -541,6 +544,7 @@ function renderQueryTemplatePanel(templates) {
       const input = document.createElement("input");
       input.type = "text";
       input.className = "snow-query-input";
+      input.dataset.key = key;
       input.placeholder = key;
       input.value = queryValues[key] || "";
       input.addEventListener("input", () => {
@@ -556,9 +560,16 @@ function renderQueryTemplatePanel(templates) {
   }
   rebuildFields();
 
-  function generateQuery(tpl) {
+  function generateQuery() {
+    const tpl = selected;
+    if (!tpl) return;
     const source = String(tpl.template || "");
-    const keys = queryPlaceholderKeys(source);
+    // Read values straight from the live inputs (source of truth at click
+    // time); module queryValues only backfills keys with no rendered input.
+    const vals = {};
+    fields.querySelectorAll(".snow-query-input").forEach((inp) => {
+      if (inp.dataset.key) vals[inp.dataset.key] = inp.value;
+    });
     let out = "";
     let last = 0;
     const re = new RegExp(QUERY_PLACEHOLDER_RE.source, "g");
@@ -566,20 +577,26 @@ function renderQueryTemplatePanel(templates) {
     while ((m = re.exec(source)) !== null) {
       out += source.slice(last, m.index);
       const key = m[1].trim();
-      out += keys.includes(key) ? String(queryValues[key] || "") : m[0];
+      if (Object.prototype.hasOwnProperty.call(vals, key)) {
+        out += vals[key];
+      } else if (key && Object.prototype.hasOwnProperty.call(queryValues, key)) {
+        out += String(queryValues[key] || "");
+      } else {
+        out += m[0]; // unknown token — leave untouched
+      }
       last = re.lastIndex;
     }
     out += source.slice(last);
     copyTextToClipboard(out).then((ok) => {
+      preview.classList.remove("hidden");
+      preview.classList.toggle("err", !ok);
+      preview.textContent = ok
+        ? "Generated & copied to the clipboard:\n\n" + out
+        : "Clipboard unavailable — copy the query below:\n\n" + out;
       if (ok) {
         toast.success("Query", "Generated query copied to the clipboard.");
-        status.classList.add("shown");
-        clearTimeout(status._t);
-        status._t = setTimeout(() => status.classList.remove("shown"), 2200);
       } else {
-        toast.error("Query", "Could not access the clipboard — copy it manually below.");
-        status.textContent = out;
-        status.classList.add("shown");
+        toast.error("Query", "Could not access the clipboard — see the query below.");
       }
     });
   }
