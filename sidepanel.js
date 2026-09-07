@@ -667,6 +667,442 @@ function fallbackCopyText(text) {
   }
 }
 
+/* ---------- Grafana Loki logs card ---------- */
+//
+// Queries Loki (through the Grafana datasource proxy) for the last N days and
+// lists lines that look like errors (4xx/5xx statusCode or an explicit
+// errorMessage), mirroring the DevTools script used previously. Runs straight
+// from this page: the browser's Grafana session cookie is what authenticates
+// the proxy, so the only requirement is having logged in to Grafana before.
+const GRAFANA_DEFAULT = {
+  domain: "https://clairvoyance.sre.globe.com.ph",
+  dsUid: "prod-gcp-field-service-mgt-logs",
+};
+const LOKI_DEFAULT_EXPR = '{app="app-workorder"} |= `183756226`';
+const LOKI_MIN_DAYS = 1;
+const LOKI_MAX_DAYS = 7;
+const LOKI_ORG_ID = "312";
+const LOKI_CHUNK_MS = 24 * 60 * 60 * 1000; // one request per day of the window
+const LOKI_LIMIT = 5000; // rows fetched per chunk (Loki pagination cap)
+const LOKI_DISPLAY_CAP = 500; // rows rendered in the result popover
+
+let lokiExpr = LOKI_DEFAULT_EXPR;
+let lokiDays = 2;
+let lokiResults = null; // null = never ran; otherwise array (may be empty)
+let lokiRunning = false;
+let lokiError = "";
+let lokiOverlay = null; // lazily-created results popover
+
+function normalizeGrafanaDomain(raw) {
+  let d = String(raw || "").trim();
+  if (!d) return "";
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(d)) d = "https://" + d;
+  return d.replace(/\/+$/, "");
+}
+
+function getGrafanaSettings() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get("sreGrafana", (data) => {
+      const g = (data && data.sreGrafana) || {};
+      resolve({
+        domain: normalizeGrafanaDomain(g.domain) || GRAFANA_DEFAULT.domain,
+        dsUid: (g.dsUid && String(g.dsUid).trim()) || GRAFANA_DEFAULT.dsUid,
+      });
+    });
+  });
+}
+
+// Ask for host access at runtime for non-default Grafana domains
+// (e.g. another host under the corporate SSO).
+function ensureGrafanaHostPermission(origin) {
+  const pattern = origin + "/*";
+  if (!chrome.permissions || !chrome.permissions.contains) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    chrome.permissions.contains({ origins: [pattern] }, (has) => {
+      if (chrome.runtime.lastError || has) return resolve(has);
+      chrome.permissions.request({ origins: [pattern] }, (granted) => {
+        if (chrome.runtime.lastError) resolve(false);
+        else resolve(!!granted);
+      });
+    });
+  });
+}
+
+async function fetchLokiChunk(origin, dsUid, expr, startMs, endMs) {
+  const startNs = (BigInt(startMs) * 1000000n).toString();
+  const endNs = (BigInt(endMs) * 1000000n).toString();
+  const qs = new URLSearchParams({
+    query: expr,
+    start: startNs,
+    end: endNs,
+    limit: String(LOKI_LIMIT),
+    direction: "BACKWARD",
+  });
+  const url =
+    origin +
+    "/api/datasources/proxy/uid/" +
+    encodeURIComponent(dsUid) +
+    "/loki/api/v1/query_range?" +
+    qs.toString();
+  const resp = await fetch(url, {
+    credentials: "include",
+    headers: { "X-Grafana-Org-Id": LOKI_ORG_ID },
+  });
+  if (!resp.ok) {
+    throw new Error(
+      "HTTP " +
+        resp.status +
+        (resp.status === 401 || resp.status === 403
+          ? " — Grafana session expired? Open Grafana once and log in."
+          : "")
+    );
+  }
+  const j = await resp.json();
+  if (j && j.status === "error") throw new Error(String(j.error || "Loki error"));
+  return j && j.data ? j.data.result || [] : [];
+}
+
+// Returns a record for one log line if it looks like an error, else null.
+function lokiRecordFromLine(line) {
+  const clean = String(line).replace(/\u001b\[[0-9;]*m/g, "");
+  let statusCode = null;
+  let matched = false;
+
+  const sc = clean.match(/["']?statusCode["']?\s*:\s*([45]\d\d)/i);
+  if (sc) {
+    statusCode = sc[1];
+    matched = true;
+  }
+  const em = clean.match(/["']?errorMessage["']?\s*:\s*["']([^"']+)["']/i);
+  let errMsg = "";
+  if (em) {
+    errMsg = em[1];
+    matched = true;
+  }
+  if (!matched) return null;
+
+  const fm = clean.match(/["']?function["']?\s*:\s*["']([^"']+)["']/i);
+  const fnName = fm ? fm[1] : "";
+  const mm = clean.match(/["']?message["']?\s*:\s*["']([^"']+)["']/i);
+  return { clean, statusCode, fnName, errMsg: errMsg || (mm ? mm[1] : "") };
+}
+
+async function runLokiQuery(expr, days) {
+  const s = await getGrafanaSettings();
+  const origin = s.domain; // already normalized
+  const url = new URL(origin);
+  const granted = await ensureGrafanaHostPermission(url.origin);
+  if (!granted) {
+    throw new Error("Host access to " + url.origin + " was not granted.");
+  }
+
+  const nowMs = Date.now();
+  const startMs = nowMs - days * LOKI_CHUNK_MS;
+  const records = [];
+  let currentEndMs = nowMs;
+
+  while (currentEndMs > startMs) {
+    const currentStartMs = Math.max(startMs, currentEndMs - LOKI_CHUNK_MS);
+    const streams = await fetchLokiChunk(
+      url.origin,
+      s.dsUid,
+      expr,
+      currentStartMs,
+      currentEndMs
+    );
+    for (const stream of streams || []) {
+      for (const pair of stream.values || []) {
+        const tsNs = Array.isArray(pair) ? pair[0] : null;
+        const line = Array.isArray(pair) ? pair[1] : "";
+        if (tsNs == null) continue;
+        const rec = lokiRecordFromLine(line);
+        if (!rec) continue;
+        records.push({
+          tsMs: Number(BigInt(String(tsNs)) / 1000000n),
+          statusCode: rec.statusCode,
+          fnName: rec.fnName,
+          errMsg: rec.errMsg,
+          clean: rec.clean,
+        });
+      }
+    }
+    currentEndMs = currentStartMs - 1;
+  }
+
+  records.sort((a, b) => b.tsMs - a.tsMs);
+  return records;
+}
+
+async function startGrafanaQuery() {
+  if (lokiRunning) return;
+  const expr = lokiExpr.trim();
+  const days = Math.min(
+    Math.max(parseInt(lokiDays, 10) || LOKI_MAX_DAYS, LOKI_MIN_DAYS),
+    LOKI_MAX_DAYS
+  );
+  if (!expr) {
+    toast.error("Logs", "Enter a LogQL expression first.");
+    return;
+  }
+  lokiDays = days;
+  lokiRunning = true;
+  lokiResults = null;
+  lokiError = "";
+  updateLokiStatusUI();
+  try {
+    const records = await runLokiQuery(expr, days);
+    lokiResults = records;
+    toast.success(
+      "Logs",
+      "Found " + records.length + " matching line(s) in the last " + days + " day(s)."
+    );
+  } catch (e) {
+    lokiError = (e && e.message) || String(e);
+    toast.error("Logs", lokiError);
+  } finally {
+    lokiRunning = false;
+    updateLokiStatusUI();
+  }
+}
+
+// One-time results popover (reused across queries). Built lazily on first open.
+function ensureLokiOverlay() {
+  if (lokiOverlay) return lokiOverlay;
+
+  const overlay = document.createElement("div");
+  overlay.className = "loki-overlay hidden";
+  const box = document.createElement("div");
+  box.className = "loki-overlay-box";
+
+  const head = document.createElement("div");
+  head.className = "loki-overlay-head";
+  const hTitle = document.createElement("span");
+  hTitle.className = "loki-overlay-title";
+  head.appendChild(hTitle);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "loki-overlay-close";
+  close.innerHTML =
+    '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.4L17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>';
+  close.addEventListener("click", () => overlay.classList.add("hidden"));
+  head.appendChild(close);
+  box.appendChild(head);
+
+  const meta = document.createElement("div");
+  meta.className = "loki-overlay-meta";
+  box.appendChild(meta);
+
+  const list = document.createElement("div");
+  list.className = "loki-overlay-list";
+  box.appendChild(list);
+
+  const foot = document.createElement("div");
+  foot.className = "loki-overlay-foot";
+  box.appendChild(foot);
+
+  overlay.appendChild(box);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.classList.add("hidden");
+  });
+  document.body.appendChild(overlay);
+  lokiOverlay = overlay;
+  return overlay;
+}
+
+function openLokiResults() {
+  if (lokiResults === null) return;
+  const overlay = ensureLokiOverlay();
+  const list = overlay.querySelector(".loki-overlay-list");
+  const meta = overlay.querySelector(".loki-overlay-meta");
+  const foot = overlay.querySelector(".loki-overlay-foot");
+  overlay.querySelector(".loki-overlay-title").textContent =
+    lokiError ? "Logs query failed" : "Log query results";
+
+  if (lokiError) {
+    meta.textContent = "";
+    foot.textContent = "";
+    list.innerHTML = "";
+    const err = document.createElement("div");
+    err.className = "loki-row loki-row-error";
+    err.textContent = lokiError;
+    list.appendChild(err);
+    overlay.classList.remove("hidden");
+    return;
+  }
+
+  const total = lokiResults.length;
+  meta.textContent =
+    total + " matching line(s)" + " · expr: " + lokiExpr.trim() + " · last " + lokiDays + " day(s)";
+  foot.textContent =
+    total > LOKI_DISPLAY_CAP
+      ? "Showing the first " + LOKI_DISPLAY_CAP + " of " + total + " lines — refine the expr or shorten the window."
+      : "";
+  list.innerHTML = "";
+  lokiResults.slice(0, LOKI_DISPLAY_CAP).forEach((r) => {
+    const row = document.createElement("div");
+    row.className = "loki-row";
+
+    const top = document.createElement("div");
+    top.className = "loki-row-top";
+    const time = document.createElement("span");
+    time.className = "loki-row-time";
+    time.textContent = new Date(r.tsMs).toLocaleString();
+    const badge = document.createElement("span");
+    badge.className = "loki-row-badge";
+    badge.textContent = r.statusCode || "Error";
+    top.appendChild(time);
+    top.appendChild(badge);
+    const fn = document.createElement("span");
+    fn.className = "loki-row-fn";
+    fn.textContent = r.fnName || "—";
+    fn.title = r.fnName || "";
+    top.appendChild(fn);
+    row.appendChild(top);
+
+    const msg = document.createElement("div");
+    msg.className = "loki-row-msg";
+    msg.textContent = r.errMsg || "(no error message captured)";
+    row.appendChild(msg);
+
+    const raw = document.createElement("details");
+    raw.className = "loki-row-raw";
+    const sum = document.createElement("summary");
+    sum.textContent = "Raw log";
+    raw.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.textContent = r.clean;
+    raw.appendChild(pre);
+    row.appendChild(raw);
+
+    list.appendChild(row);
+  });
+
+  overlay.classList.remove("hidden");
+}
+
+function renderLokiLogsPanel() {
+  const card = document.createElement("div");
+  card.className = "snow-info snow-info-loki";
+
+  const head = document.createElement("div");
+  head.className = "snow-info-head";
+  const icon = document.createElement("span");
+  icon.className = "snow-info-icon";
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v3H4V4zm0 6.5h10v3H4v-3zm0 6.5h16v3H4v-3z"/></svg>';
+  const title = document.createElement("span");
+  title.className = "snow-info-title";
+  title.textContent = "Logs";
+  head.appendChild(icon);
+  head.appendChild(title);
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "snow-loki-body";
+
+  const exprRow = document.createElement("div");
+  exprRow.className = "snow-loki-expr-row";
+  const exprInput = document.createElement("input");
+  exprInput.type = "text";
+  exprInput.className = "snow-loki-expr";
+  exprInput.spellcheck = false;
+  exprInput.value = lokiExpr;
+  exprInput.title = "LogQL expression";
+  exprInput.addEventListener("input", () => {
+    lokiExpr = exprInput.value;
+  });
+  exprRow.appendChild(exprInput);
+  body.appendChild(exprRow);
+
+  const ctl = document.createElement("div");
+  ctl.className = "snow-loki-ctl";
+
+  const daysWrap = document.createElement("div");
+  daysWrap.className = "snow-loki-days-wrap";
+  const daysInput = document.createElement("input");
+  daysInput.type = "number";
+  daysInput.className = "snow-loki-days";
+  daysInput.min = String(LOKI_MIN_DAYS);
+  daysInput.max = String(LOKI_MAX_DAYS);
+  daysInput.value = String(lokiDays);
+  daysInput.title = "Look back window (days): " + LOKI_MIN_DAYS + "–" + LOKI_MAX_DAYS;
+  daysInput.addEventListener("input", () => {
+    lokiDays = daysInput.value;
+  });
+  const daysLabel = document.createElement("span");
+  daysLabel.className = "snow-loki-days-label";
+  daysLabel.textContent = "days";
+  daysWrap.appendChild(daysInput);
+  daysWrap.appendChild(daysLabel);
+  ctl.appendChild(daysWrap);
+
+  const spacer = document.createElement("div");
+  spacer.className = "snow-loki-spacer";
+  ctl.appendChild(spacer);
+
+  const statusBtn = document.createElement("button");
+  statusBtn.type = "button";
+  statusBtn.className = "snow-loki-status";
+  statusBtn.hidden = true;
+  statusBtn.addEventListener("click", openLokiResults);
+  ctl.appendChild(statusBtn);
+
+  const runBtn = document.createElement("button");
+  runBtn.type = "button";
+  runBtn.className = "snow-loki-run";
+  runBtn.textContent = "Query";
+  runBtn.addEventListener("click", startGrafanaQuery);
+  ctl.appendChild(runBtn);
+
+  body.appendChild(ctl);
+
+  const errLine = document.createElement("div");
+  errLine.className = "snow-loki-error";
+  errLine.hidden = true;
+  body.appendChild(errLine);
+
+  card.appendChild(body);
+  return card;
+}
+
+// Syncs the card's controls with lokiRunning / lokiResults / lokiError state.
+function updateLokiStatusUI() {
+  const panel = document.querySelector(".snow-info-loki");
+  if (!panel) return;
+  const run = panel.querySelector(".snow-loki-run");
+  const statusBtn = panel.querySelector(".snow-loki-status");
+  const errLine = panel.querySelector(".snow-loki-error");
+
+  if (run) {
+    run.disabled = lokiRunning;
+    run.textContent = lokiRunning ? "Querying…" : "Query";
+    run.classList.toggle("busy", lokiRunning);
+  }
+  if (errLine) {
+    errLine.hidden = !lokiError;
+    errLine.textContent = lokiError || "";
+  }
+  if (statusBtn) {
+    statusBtn.hidden = lokiRunning || lokiResults === null;
+    statusBtn.classList.toggle("busy", lokiRunning);
+    statusBtn.classList.toggle("has-results", !lokiRunning && lokiResults !== null);
+    if (lokiRunning) {
+      statusBtn.title = "Query running…";
+      statusBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 6v3l4-4-4-4v3a8 8 0 0 0-8 8c0 1.5.4 2.9 1.1 4.1l1.5-1.5A5.9 5.9 0 0 1 6 12a6 6 0 0 1 6-6z"/></svg>';
+    } else if (lokiResults !== null) {
+      statusBtn.title = "Show " + lokiResults.length + " result(s)";
+      statusBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M4 4h16v3H4V4zm0 6.5h10v3H4v-3zm0 6.5h16v3H4v-3z"/></svg>' +
+        '<span class="snow-loki-count">' +
+        lokiResults.length +
+        "</span>";
+    }
+  }
+}
+
 /* ---------- ServiceNow Labels (tag) picker ---------- */
 //
 // Rendered in its own "Labels" card directly below the Base Info card.
@@ -1170,14 +1606,7 @@ function render(data) {
 
   const hasFlows = playbooks.length > 0 || services.length > 0;
   const hasTemplates = queryTemplates.length > 0;
-
-  if (!hasFlows && !hasTemplates) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.innerHTML = "No ServiceNow flows or services configured.<br>Open options to create one.";
-    contentEl.appendChild(empty);
-    return;
-  }
+  // (No whole-panel empty state anymore: the Logs card below is always useful.)
 
   // 2) Tags card — needs a captured ServiceNow context to be useful, so it is
   //    only shown when there is flow content below it.
@@ -1192,7 +1621,11 @@ function render(data) {
     contentEl.appendChild(renderQueryTemplatePanel(queryTemplates));
   }
 
-  if (!hasFlows) return; // nothing below except the Query card
+  // 4) Grafana Loki Logs card — directly below the Query card; always rendered.
+  contentEl.appendChild(renderLokiLogsPanel());
+  updateLokiStatusUI();
+
+  if (!hasFlows) return; // nothing below except the info cards above
 
   if (playbooks.length > 0) {
     // Shared Common Steps document (params + step map).

@@ -766,6 +766,49 @@
       color: var(--muted);
     }
     .qtm-placeholder-count code { font-family: "SFMono-Regular", Consolas, monospace; }
+
+    /* ---------- Grafana tab ---------- */
+    .graf-fields {
+      max-width: 640px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .graf-field {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .graf-label {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .graf-input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 8px 10px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12.5px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+    }
+    .graf-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-soft);
+    }
+    .graf-status {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .graf-status.saved {
+      color: var(--success, #1a7f4e);
+    }
   </style>
 </head>
 <body>
@@ -779,6 +822,7 @@
       <button class="tab top" data-tab="querytemplates">Query Templates</button>
       <button class="tab top" data-tab="notification">Notification</button>
       <button class="tab top" data-tab="env">Environment</button>
+      <button class="tab top" data-tab="grafana">Grafana</button>
     </div>
 
     <!-- ServiceNow page: Form | Common | Flows -->
@@ -915,6 +959,29 @@ state,State,Resolved,6</pre>
       </div>
       <div id="envWrap"></div>
     </div>
+
+    <!-- Grafana settings page: backs the side panel's Logs (Loki) card.
+         Domain is the Grafana origin to query; DS UID is the Loki datasource.
+         Queries authenticate with the browser's Grafana session cookie, so the
+         domain must be reachable and you must be logged in. -->
+    <div class="tab-page hidden" id="page-grafana">
+      <div class="env-toolbar">
+        <span class="common-note">Grafana instance used by the side panel's <b>Logs</b> card. Set the domain and the Loki datasource UID here; the query expression and look-back window are edited per query in the panel. First query to a domain outside the pre-granted hosts will ask for host access.</span>
+      </div>
+      <div class="graf-fields">
+        <label class="graf-field">
+          <span class="graf-label">Domain</span>
+          <input id="grafDomain" class="graf-input" type="text" spellcheck="false"
+                 placeholder="https://clairvoyance.sre.globe.com.ph" />
+        </label>
+        <label class="graf-field">
+          <span class="graf-label">Loki datasource UID</span>
+          <input id="grafDsUid" class="graf-input" type="text" spellcheck="false"
+                 placeholder="prod-gcp-field-service-mgt-logs" />
+        </label>
+        <p class="graf-status" id="grafStatus">Values are saved automatically.</p>
+      </div>
+    </div>
   </div>
 
   <script src="yaml-lite.js"></script>
@@ -940,5 +1007,6 @@ state,State,Resolved,6</pre>
   <!-- Shared env-variable field defs, then the Environment tab logic. -->
   <script src="env-defs.js"></script>
   <script src="options-env.js"></script>
+  <script src="options-grafana.js"></script>
 </body>
 </html>

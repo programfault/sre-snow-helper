@@ -13,6 +13,9 @@
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
+  "optional_host_permissions": [
+    "*://*/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
