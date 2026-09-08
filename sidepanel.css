@@ -840,6 +840,12 @@ body {
   background: var(--primary-soft);
 }
 
+/* .snow-refresh-btn uses display:flex, which would beat the UA `[hidden]`
+   rule — the picker reset stays hidden until an item is actually picked. */
+.snow-info-head .pick-reset[hidden] {
+  display: none;
+}
+
 .snow-refresh-btn.busy svg {
   animation: snow-spin 0.8s linear infinite;
 }
@@ -1347,6 +1353,13 @@ body {
 
 .snow-loki-status:hover {
   border-color: var(--primary);
+}
+
+/* The status button is shown only while a query is running (spinner) or once
+   results exist (icon + count). `display:flex` above would otherwise beat the
+   UA `[hidden]{display:none}` and leave a blank box beside the Query button. */
+.snow-loki-status[hidden] {
+  display: none;
 }
 
 .snow-loki-status.busy svg {

@@ -1085,7 +1085,9 @@ function updateLokiStatusUI() {
     errLine.textContent = lokiError || "";
   }
   if (statusBtn) {
-    statusBtn.hidden = lokiRunning || lokiResults === null;
+    // Visible while a query runs (spinner) or once results exist (icon+count);
+    // hidden only when idle with no results yet.
+    statusBtn.hidden = !lokiRunning && lokiResults === null;
     statusBtn.classList.toggle("busy", lokiRunning);
     statusBtn.classList.toggle("has-results", !lokiRunning && lokiResults !== null);
     if (lokiRunning) {
@@ -1956,6 +1958,17 @@ function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialId
   titleEl.textContent = title;
   head.appendChild(icon);
   head.appendChild(titleEl);
+
+  // One-click reset: back to the blank "nothing selected" state. It only shows
+  // once something is picked (no empty icon clutter like the Logs status btn).
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "snow-refresh-btn pick-reset";
+  resetBtn.title = "Clear selection";
+  resetBtn.hidden = true;
+  resetBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
+  head.appendChild(resetBtn);
   card.appendChild(head);
 
   const body = document.createElement("div");
@@ -1991,6 +2004,10 @@ function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialId
 
   const labelOf = (idx) => (byIdx.get(idx) || {}).text || "";
   const close = () => drop.classList.remove("open");
+  const syncReset = () => {
+    resetBtn.hidden = cur === null;
+  };
+  syncReset();
 
   function paintList() {
     const q = input.value.trim().toLowerCase();
@@ -2008,6 +2025,7 @@ function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialId
         cur = null;
         input.value = "";
         input.blur();
+        syncReset();
         onPick(-1);
       });
       drop.appendChild(none);
@@ -2024,6 +2042,7 @@ function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialId
         cur = o.idx;
         input.value = o.text;
         input.blur();
+        syncReset();
         onPick(o.idx);
       });
       drop.appendChild(b);
@@ -2048,6 +2067,15 @@ function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialId
       if (cur !== null) input.value = labelOf(cur);
       input.blur();
     }
+  });
+
+  resetBtn.addEventListener("click", () => {
+    cur = null;
+    input.value = "";
+    close();
+    input.blur();
+    syncReset();
+    onPick(-1);
   });
 
   return { card, host };
