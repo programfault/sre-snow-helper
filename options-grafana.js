@@ -1,8 +1,10 @@
 // SRE Helper options — Grafana settings.
 //
-// Backs the side panel's Logs (Loki) card. Two values:
-//   domain — Grafana origin (default clairvoyance.sre.globe.com.ph), and
-//   dsUid  — Loki datasource UID inside that Grafana.
+// Backs the side panel's Logs (Loki) card. Three values:
+//   domain      — Grafana origin (default clairvoyance.sre.globe.com.ph),
+//   dsUid       — Loki datasource UID inside that Grafana, and
+//   defaultExpr — the LogQL expression the Logs card pre-fills (still editable
+//                 per query in the panel).
 // Persisted under chrome.storage.local key sreGrafana. The side panel reads
 // this key fresh on every query, so no cross-page notification is required.
 
@@ -10,6 +12,7 @@ const GRAFANA_STORE = "sreGrafana";
 const GRAFANA_FALLBACK = {
   domain: "https://clairvoyance.sre.globe.com.ph",
   dsUid: "prod-gcp-field-service-mgt-logs",
+  defaultExpr: '{app="app-workorder"} |= `183756226`',
 };
 
 let grafSaveTimer = null;
@@ -29,6 +32,7 @@ function grafPersistSoon() {
     const settings = {
       domain: document.getElementById("grafDomain").value.trim(),
       dsUid: document.getElementById("grafDsUid").value.trim(),
+      defaultExpr: document.getElementById("grafExpr").value.trim(),
     };
     chrome.storage.local.set({ [GRAFANA_STORE]: settings }, () => {
       const st = grafStatusEl();
@@ -45,6 +49,7 @@ function renderGrafanaSettings() {
     const g = (data && data.sreGrafana) || {};
     const domain = document.getElementById("grafDomain");
     const dsUid = document.getElementById("grafDsUid");
+    const expr = document.getElementById("grafExpr");
     if (domain) {
       domain.value = g.domain && String(g.domain).trim()
         ? String(g.domain)
@@ -55,13 +60,20 @@ function renderGrafanaSettings() {
         ? String(g.dsUid)
         : GRAFANA_FALLBACK.dsUid;
     }
+    if (expr) {
+      expr.value = g.defaultExpr && String(g.defaultExpr).trim()
+        ? String(g.defaultExpr)
+        : GRAFANA_FALLBACK.defaultExpr;
+    }
   });
 }
 
 (function initGrafanaSettings() {
   const domain = document.getElementById("grafDomain");
   const dsUid = document.getElementById("grafDsUid");
+  const expr = document.getElementById("grafExpr");
   if (domain) domain.addEventListener("input", grafPersistSoon);
   if (dsUid) dsUid.addEventListener("input", grafPersistSoon);
+  if (expr) expr.addEventListener("input", grafPersistSoon);
   renderGrafanaSettings();
 })();

@@ -961,12 +961,13 @@ state,State,Resolved,6</pre>
     </div>
 
     <!-- Grafana settings page: backs the side panel's Logs (Loki) card.
-         Domain is the Grafana origin to query; DS UID is the Loki datasource.
+         Domain is the Grafana origin to query; DS UID is the Loki datasource;
+         the expression below pre-fills the Logs card until you edit it there.
          Queries authenticate with the browser's Grafana session cookie, so the
          domain must be reachable and you must be logged in. -->
     <div class="tab-page hidden" id="page-grafana">
       <div class="env-toolbar">
-        <span class="common-note">Grafana instance used by the side panel's <b>Logs</b> card. Set the domain and the Loki datasource UID here; the query expression and look-back window are edited per query in the panel. First query to a domain outside the pre-granted hosts will ask for host access.</span>
+        <span class="common-note">Grafana instance used by the side panel's <b>Logs</b> card. Set the domain, the Loki datasource UID and the default query expression here. The expression and the look-back window are still editable per query in the panel. First query to a domain outside the pre-granted hosts will ask for host access.</span>
       </div>
       <div class="graf-fields">
         <label class="graf-field">
@@ -978,6 +979,11 @@ state,State,Resolved,6</pre>
           <span class="graf-label">Loki datasource UID</span>
           <input id="grafDsUid" class="graf-input" type="text" spellcheck="false"
                  placeholder="prod-gcp-field-service-mgt-logs" />
+        </label>
+        <label class="graf-field">
+          <span class="graf-label">Default LogQL expr</span>
+          <input id="grafExpr" class="graf-input graf-expr" type="text" spellcheck="false"
+                 placeholder='{app="app-workorder"} |= `183756226`' />
         </label>
         <p class="graf-status" id="grafStatus">Values are saved automatically.</p>
       </div>

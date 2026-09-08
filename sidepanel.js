@@ -687,6 +687,7 @@ const LOKI_LIMIT = 5000; // rows fetched per chunk (Loki pagination cap)
 const LOKI_DISPLAY_CAP = 500; // rows rendered in the result popover
 
 let lokiExpr = LOKI_DEFAULT_EXPR;
+let lokiExprTouched = false; // user edited the expr input at least once
 let lokiDays = 2;
 let lokiResults = null; // null = never ran; otherwise array (may be empty)
 let lokiRunning = false;
@@ -707,6 +708,8 @@ function getGrafanaSettings() {
       resolve({
         domain: normalizeGrafanaDomain(g.domain) || GRAFANA_DEFAULT.domain,
         dsUid: (g.dsUid && String(g.dsUid).trim()) || GRAFANA_DEFAULT.dsUid,
+        defaultExpr:
+          (g.defaultExpr && String(g.defaultExpr).trim()) || LOKI_DEFAULT_EXPR,
       });
     });
   });
@@ -1012,9 +1015,24 @@ function renderLokiLogsPanel() {
   exprInput.title = "LogQL expression";
   exprInput.addEventListener("input", () => {
     lokiExpr = exprInput.value;
+    lokiExprTouched = true;
   });
   exprRow.appendChild(exprInput);
   body.appendChild(exprRow);
+
+  // Pre-fill the field with the stored default expression (Options → Grafana)
+  // unless the user has already edited it. The module value above stays as the
+  // fallback while the async read is in flight.
+  chrome.storage.local.get("sreGrafana", (data) => {
+    if (lokiExprTouched || !card.isConnected) return;
+    const g = (data && data.sreGrafana) || {};
+    const def =
+      (g.defaultExpr && String(g.defaultExpr).trim()) || LOKI_DEFAULT_EXPR;
+    if (exprInput.value !== def) {
+      lokiExpr = def;
+      exprInput.value = def;
+    }
+  });
 
   const ctl = document.createElement("div");
   ctl.className = "snow-loki-ctl";
