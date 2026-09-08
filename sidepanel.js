@@ -1627,48 +1627,16 @@ function render(data) {
 
   if (!hasFlows) return; // nothing below except the info cards above
 
+  // 3) ServiceNow flows — a single selector card that shows one flow at a time
+  //    (dropdown instead of a stack of collapsible playbook cards).
   if (playbooks.length > 0) {
-    // Shared Common Steps document (params + step map).
     const common = Y.parseCommonSteps(data.commonYaml || "");
-
-    // --- Mega panel ---
-    const mega = document.createElement("div");
-    mega.className = "mega-panel";
-    // Persisted collapsed state (default: expanded).
-    const megaCollapsed = srePanelState.megaCollapsed.all === true;
-    if (megaCollapsed) mega.classList.add("collapsed");
-
-    const megaHeader = document.createElement("div");
-    megaHeader.className = "mega-header";
-    megaHeader.innerHTML = `
-      <span class="mega-toggle">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-      </span>
-      <span class="mega-title">ServiceNow</span>
-      <span class="mega-count">${playbooks.length}</span>
-    `;
-    megaHeader.addEventListener("click", () => {
-      mega.classList.toggle("collapsed");
-      srePanelState.megaCollapsed.all = mega.classList.contains("collapsed");
-      persistState();
-    });
-
-    const megaBody = document.createElement("div");
-    megaBody.className = "mega-body";
-
-    playbooks.forEach((pb) => {
-      megaBody.appendChild(renderPlaybookCard(pb, common, forms));
-    });
-
-    mega.appendChild(megaHeader);
-    mega.appendChild(megaBody);
-    contentEl.appendChild(mega);
-    snowTagCtxTick();
+    contentEl.appendChild(renderFlowsSelectorPanel(playbooks, common, forms));
   }
 
-  // 4) Services mega panel (runs below Playbooks).
+  // 4) Services — the same selector pattern, below the flows.
   if (services.length > 0) {
-    contentEl.appendChild(renderServicesPanel(services));
+    contentEl.appendChild(renderServicesSelectorPanel(services));
   }
 }
 
@@ -1951,37 +1919,237 @@ function renderStepItem(step, idx, common) {
 // "Execute" performs real fetch() calls in order; captured aliases flow
 // forward into later steps of the same card.
 
-function renderServicesPanel(services) {
-  const panel = document.createElement("div");
-  panel.className = "mega-panel";
-  const collapsedKey = "services";
-  if (srePanelState.megaCollapsed && srePanelState.megaCollapsed[collapsedKey]) {
-    panel.classList.add("collapsed");
-  }
+/* ---------- Flows & Services selector panels ---------- */
+//
+// The ServiceNow flows and the shared Services doc each render as one card in
+// the Tags/Query style (edge-to-edge snow-info). Their picker reuses the Tags
+// combobox UI (a filterable input whose dropdown stays inside the panel, so it
+// never overflows the side bar): every item is listed a-z with its full label
+// (name — desc), typing narrows the list, and only the chosen item's body is
+// shown beneath it. The per-item body is still produced by renderPlaybookCard
+// / renderServiceCard (behavior unchanged), just with its card chrome stripped.
+//
+// Selection is remembered across re-renders via srePanelState.selFlow (pb id)
+// and srePanelState.selService (index in the services doc).
+
+// Truncate a long label for display; the full text is kept in the tooltip.
+function pickerShown(text) {
+  return text.length > 48 ? text.slice(0, 48) + "…" : text;
+}
+
+// Builds a Tags-style picker card: head (icon + title), then a combo box row
+// (filter input + dropdown), then a body host the caller fills with the chosen
+// item. `items` are already sorted and carry the ORIGINAL index (`idx`) so the
+// option order never breaks the value → item mapping. `onPick(idx)` is called
+// with the item's original idx, or -1 when the user clears the selection.
+function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialIdx, onPick) {
+  const card = document.createElement("div");
+  card.className = "snow-info";
 
   const head = document.createElement("div");
-  head.className = "mega-header";
-  head.innerHTML = `
-    <span class="mega-toggle">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-    </span>
-    <span class="mega-title">Services</span>
-    <span class="mega-count">${services.length}</span>
-  `;
-  head.addEventListener("click", () => {
-    panel.classList.toggle("collapsed");
-    if (!srePanelState.megaCollapsed) srePanelState.megaCollapsed = {};
-    srePanelState.megaCollapsed[collapsedKey] = panel.classList.contains("collapsed");
-    persistState();
-  });
+  head.className = "snow-info-head";
+  const icon = document.createElement("span");
+  icon.className = "snow-info-icon";
+  icon.innerHTML = iconSvg;
+  const titleEl = document.createElement("span");
+  titleEl.className = "snow-info-title";
+  titleEl.textContent = title;
+  head.appendChild(icon);
+  head.appendChild(titleEl);
+  card.appendChild(head);
 
   const body = document.createElement("div");
-  body.className = "mega-body";
-  services.forEach((item, idx) => body.appendChild(renderServiceCard(item, idx)));
+  body.className = "sel-body";
 
-  panel.appendChild(head);
-  panel.appendChild(body);
-  return panel;
+  // --- Picker row (same DOM/classes as the Tags combo) ---
+  const row = document.createElement("div");
+  row.className = "snow-tags-row";
+  const combo = document.createElement("div");
+  combo.className = "snow-tags-combo";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "snow-tags-input";
+  input.placeholder = placeholderText || "Select…";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const drop = document.createElement("div");
+  drop.className = "snow-tags-drop";
+  combo.appendChild(input);
+  combo.appendChild(drop);
+  row.appendChild(combo);
+  body.appendChild(row);
+
+  const host = document.createElement("div");
+  host.className = "sel-item-host";
+  body.appendChild(host);
+
+  card.appendChild(body);
+
+  const byIdx = new Map(items.map((o) => [o.idx, o]));
+  let cur = initialIdx >= 0 && byIdx.has(initialIdx) ? initialIdx : null;
+  if (cur !== null) input.value = byIdx.get(cur).text;
+
+  const labelOf = (idx) => (byIdx.get(idx) || {}).text || "";
+  const close = () => drop.classList.remove("open");
+
+  function paintList() {
+    const q = input.value.trim().toLowerCase();
+    const cands = items.filter((o) => !q || o.text.toLowerCase().includes(q));
+    drop.replaceChildren();
+    if (cur !== null) {
+      const none = document.createElement("button");
+      none.type = "button";
+      none.className = "snow-tag-opt pick-clear";
+      none.textContent = "— no selection —";
+      none.title = "Clear selection";
+      none.addEventListener("mousedown", (e) => e.preventDefault());
+      none.addEventListener("click", (e) => {
+        e.preventDefault();
+        cur = null;
+        input.value = "";
+        input.blur();
+        onPick(-1);
+      });
+      drop.appendChild(none);
+    }
+    cands.slice(0, 60).forEach((o) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "snow-tag-opt";
+      b.textContent = pickerShown(o.text);
+      b.title = o.text;
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        cur = o.idx;
+        input.value = o.text;
+        input.blur();
+        onPick(o.idx);
+      });
+      drop.appendChild(b);
+    });
+    if (cands.length || cur !== null) drop.classList.add("open");
+  }
+
+  input.addEventListener("focus", () => {
+    // Focus = start picking: blank the box so every option is reachable; the
+    // previous label is restored on blur if nothing new is picked.
+    input.value = "";
+    paintList();
+  });
+  input.addEventListener("input", paintList);
+  input.addEventListener("blur", () => {
+    close();
+    if (cur !== null) input.value = labelOf(cur);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      close();
+      if (cur !== null) input.value = labelOf(cur);
+      input.blur();
+    }
+  });
+
+  return { card, host };
+}
+
+// Neutralize an existing playbook/service card node: drop its own header and
+// border so only its body rows remain inside the selector card.
+function neutralizeItemNode(node) {
+  node.classList.remove("collapsed");
+  node.classList.add("pb-sel-neutral");
+  const hd = node.querySelector(".pb-card-header");
+  if (hd) hd.remove();
+  return node;
+}
+
+function renderFlowsSelectorPanel(playbooks, common, forms) {
+  // Flow names may repeat; the desc is what tells them apart, so the dropdown
+  // shows `name — desc` and sorts options a-z by that label.
+  const list = playbooks.map((pb, i) => {
+    const yaml = pb.yaml || "";
+    const h = Y.parseHeader(yaml);
+    const name = h.name || "(unnamed)";
+    const desc = h.desc || "";
+    return { idx: i, text: desc ? name + " — " + desc : name };
+  });
+  list.sort((a, b) => a.text.localeCompare(b.text, undefined, { sensitivity: "base", numeric: true }));
+
+  // Resolve the remembered selection (by pb.id). Nothing selected yet — the
+  // body stays hidden, exactly like the Query card — unless a saved id matches.
+  const savedId = srePanelState && srePanelState.selFlow;
+  let startIdx = -1;
+  if (savedId) {
+    const found = playbooks.findIndex((p) => p.id === savedId);
+    if (found >= 0) startIdx = found;
+  }
+
+  const { card, host } = buildFilterPickerCard(
+    "Servicenow",
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M13 2 3 14h7l-1 8 11-12h-7z"/></svg>',
+    list,
+    "Select a flow…",
+    startIdx,
+    (idx) => {
+      if (!srePanelState) srePanelState = {};
+      srePanelState.selFlow = idx >= 0 && playbooks[idx] ? playbooks[idx].id : null;
+      persistState();
+      renderAt(idx);
+    }
+  );
+  card.classList.add("snow-info-flows");
+
+  function renderAt(idx) {
+    host.replaceChildren();
+    if (idx < 0 || !playbooks[idx]) return; // nothing chosen → keep it blank
+    const node = neutralizeItemNode(renderPlaybookCard(playbooks[idx], common, forms));
+    host.appendChild(node);
+  }
+  renderAt(startIdx);
+  return card;
+}
+
+function renderServicesSelectorPanel(services) {
+  const list = services.map((item, i) => {
+    const isGroup = item.type === "group";
+    const kind = isGroup
+      ? "group · " + (item.services ? item.services.length : 0) + " calls"
+      : item.method || "api";
+    const desc = [kind, item.desc].filter(Boolean).join(" — ");
+    const name = item.name || "(unnamed)";
+    return { idx: i, text: desc ? name + " — " + desc : name };
+  });
+  list.sort((a, b) => a.text.localeCompare(b.text, undefined, { sensitivity: "base", numeric: true }));
+
+  const saved = srePanelState && srePanelState.selService;
+  let startIdx = -1;
+  if (typeof saved === "number" && saved >= 0 && saved < services.length) {
+    startIdx = saved;
+  }
+
+  const { card, host } = buildFilterPickerCard(
+    "Services",
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M21 16.5c0 .38-.21.71-.53.88l-7.9 4.44c-.16.12-.36.18-.57.18-.21 0-.41-.06-.57-.18l-7.9-4.44A.99.99 0 0 1 3 16.5v-9c0-.38.21-.71.53-.88l7.9-4.44c.16-.12.36-.18.57-.18.21 0 .41.06.57.18l7.9 4.44c.32.17.53.5.53.88v9zM12 4.15 6.04 7.5 12 10.85l5.96-3.35L12 4.15zM5 15.91l6 3.38V12.9L5 9.52v6.39zm14 0V9.52l-6 3.38v6.39l6-3.38z"/></svg>',
+    list,
+    "Select a service…",
+    startIdx,
+    (idx) => {
+      if (!srePanelState) srePanelState = {};
+      srePanelState.selService = idx >= 0 ? idx : null;
+      persistState();
+      renderAt(idx);
+    }
+  );
+  card.classList.add("snow-info-services");
+
+  function renderAt(idx) {
+    host.replaceChildren();
+    if (idx < 0 || !services[idx]) return; // nothing chosen → keep it blank
+    const node = neutralizeItemNode(renderServiceCard(services[idx], idx));
+    host.appendChild(node);
+  }
+  renderAt(startIdx);
+  return card;
 }
 
 function renderServiceCard(item, idx) {

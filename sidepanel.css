@@ -1243,8 +1243,12 @@ body {
 }
 
 /* ---------- Grafana Loki Logs card ---------- */
-.content > .snow-info-loki {
-  margin: 10px;
+/* Edge-to-edge like the Tags / Query cards (one continuous white surface). */
+.content > .snow-info.snow-info-loki {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .snow-loki-body {
@@ -1532,5 +1536,50 @@ body {
   max-height: 200px;
   overflow: auto;
   color: var(--text);
+}
+
+/* ---------- Flows & Services selector cards ---------- */
+/* Same family as Tags / Query / Logs: edge-to-edge snow-info surfaces where a
+   <select> picks one item and only its body renders below. */
+.content > .snow-info.snow-info-flows,
+.content > .snow-info.snow-info-services {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sel-body {
+  padding: 0 14px 12px;
+}
+
+/* "no selection" row shown at the top of the picker list once a pick exists. */
+.pick-clear {
+  color: var(--muted);
+}
+
+.pick-clear:hover {
+  background: transparent !important;
+  color: var(--primary);
+}
+
+/* The selected playbook/service node keeps its DOM (and working buttons) but
+   loses its own panel chrome — the selector card already provides it. */
+.sel-item-host .pb-card,
+.sel-item-host .pb-sel-neutral {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.sel-item-host .pb-card-body {
+  border-top: 1px solid var(--border);
+  padding: 2px 14px 12px;
+}
+
+.sel-item-host .pb-card-body .section-label:first-child {
+  margin-top: 10px;
 }
 
