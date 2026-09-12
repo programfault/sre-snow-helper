@@ -5,8 +5,7 @@
 //   * gsmgt-prod.gobetel.com  (exact host; same capture logic as globe.com.ph)
 // It reads three values straight off the page the user is looking at,
 // whenever they can be found:
-//   * fwo  — OrderNumber: the order-number-shaped <h6> inside main.body-content
-//            (page chrome headings such as "Applied filter" are skipped).
+//   * fwo  — OrderNumber: the first <h6> text inside main.body-content.
 //   * fsid — serviceid: the first digit-bearing text inside the parent of the
 //            "Service ID" label (matched ignoring case / whitespace / a
 //            trailing colon).
@@ -31,27 +30,12 @@
 
   /* ---------- DOM / storage readers ---------- */
 
-  // OrderNumber / work-order number: the h6 inside main.body-content that
-  // actually holds the number.
-  //
-  // That container also carries page chrome as h6 — a list view with a filter
-  // applied puts "Applied filter" first — so taking the first h6 blindly hands
-  // back a UI heading as the order number (it shows up as an "Applied filter"
-  // value in the side panel). An order number is a single token of digits,
-  // optionally with a short letter prefix, so prefer the first heading shaped
-  // like one and never fall back to a heading that has no digits at all.
-  const ORDER_NO_RE = /^[A-Za-z]{0,4}[-_ ]?\d{5,}$/;
-
+  // OrderNumber / work-order number: first h6 inside main.body-content, taken
+  // verbatim — the reference script's rule, kept exactly as it was.
   function readOrderNumber() {
     const bodyContent = document.querySelector("main.body-content, .body-content");
-    if (!bodyContent) return "";
-    const texts = Array.from(bodyContent.querySelectorAll("h6"))
-      .map((el) => String(el.textContent || "").trim())
-      .filter(Boolean);
-    const shaped = texts.find((t) => ORDER_NO_RE.test(t));
-    if (shaped) return shaped;
-    // Unexpected layout: accept any unspaced heading that carries digits.
-    return texts.find((t) => /\d/.test(t) && !/\s/.test(t)) || "";
+    const firstH6 = bodyContent ? bodyContent.querySelector("h6") : null;
+    return firstH6 ? String(firstH6.textContent || "").trim() : "";
   }
 
   // Compare labels on a normalised form: the FSM app renders "Service ID" but
