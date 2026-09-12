@@ -89,13 +89,22 @@ body {
   font-weight: 600;
 }
 
+/* Header identity lines. Block so the incident number and the work order
+   number each get their own line under the product name. */
 .subtitle {
+  display: block;
   font-size: 11px;
   color: var(--muted);
 }
 
-/* Header shows the captured incident number instead of the product label, so
-   give it the look of a value rather than a caption. */
+/* The work order line is dropped entirely while no FSM order page has been
+   captured, so the header keeps its compact single-line shape. */
+.subtitle.hidden {
+  display: none;
+}
+
+/* Header shows the captured incident / work order number instead of a caption,
+   so give them the look of values rather than labels. */
 .subtitle.has-number {
   font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
   font-weight: 600;

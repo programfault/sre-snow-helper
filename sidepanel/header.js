@@ -254,7 +254,7 @@ function refreshEnvFromActiveTab() {
   Promise.all([pokeSnow, pokeGoble]).then(() => {
     envRefreshBtn.classList.remove("busy");
     snowTagCtxTick();
-    updateHeaderSubtitle();
+    updateHeaderNumbers();
     // Show the result: open the popover if it isn't already, so the user sees
     // the freshly captured values right away.
     if (envPopoverEl.classList.contains("hidden")) openEnvPopover();
@@ -268,25 +268,36 @@ if (envRefreshBtn) {
 
 buildEnvPopover();
 
-/* Header second line — the captured ServiceNow incident number.
+/* Header identity lines — the captured ServiceNow incident number, with the
+ * FSM work order number underneath it.
  *
- * Reading the number off the header is faster than opening the Environment
- * popover to compare it against the page in front of you. It shows the same
- * snowCtx.number the popover lists as "Incident", so the two can never
- * disagree; while nothing has been captured it falls back to the plain
- * product label the markup ships with. */
-function updateHeaderSubtitle() {
-  if (!headerSubtitleEl) return;
-  const c = snowCtx || {};
-  const number = c.number ? String(c.number) : "";
-  headerSubtitleEl.textContent = number || "Servicenow";
-  headerSubtitleEl.classList.toggle("has-number", !!number);
-  headerSubtitleEl.title = number
-    ? "ServiceNow incident " + number + (c.instance ? " · " + c.instance : "")
-    : "ServiceNow incident number (none captured yet)";
+ * Reading the numbers off the header is faster than opening the Environment
+ * popover to compare them against the page in front of you. Both come from the
+ * snapshots that popover reads (snowCtx.number / gobleCtx.fwo, listed there as
+ * Incident / Order Number), so the two surfaces can never disagree. The
+ * incident line falls back to the plain product label the markup ships with;
+ * the work order line stays hidden until an FSM order page has been captured. */
+function updateHeaderNumbers() {
+  const sn = snowCtx || {};
+  const number = sn.number ? String(sn.number) : "";
+  if (headerSubtitleEl) {
+    headerSubtitleEl.textContent = number || "Servicenow";
+    headerSubtitleEl.classList.toggle("has-number", !!number);
+    headerSubtitleEl.title = number
+      ? "ServiceNow incident " + number +
+        (sn.instance ? " · " + sn.instance : "")
+      : "ServiceNow incident number (none captured yet)";
+  }
+  if (!headerWorkOrderEl) return;
+  const g = gobleCtx || {};
+  const wo = g.fwo ? String(g.fwo) : "";
+  headerWorkOrderEl.textContent = wo;
+  headerWorkOrderEl.classList.toggle("has-number", !!wo);
+  headerWorkOrderEl.classList.toggle("hidden", !wo);
+  headerWorkOrderEl.title = wo ? "FSM work order " + wo : "";
 }
 
-updateHeaderSubtitle();
+updateHeaderNumbers();
 
 // Pull the background's most recent ServiceNow snapshot into snowCtx. The
 // background keeps the LAST non-empty capture (the same source the Options
@@ -299,7 +310,7 @@ function refreshSnowContext() {
       snowCtx = (resp && resp.ok && resp.ctx) || null;
       refreshEnvValues();
       snowTagCtxTick();
-      updateHeaderSubtitle();
+      updateHeaderNumbers();
     });
   } catch (_) {}
 }
@@ -311,6 +322,7 @@ function refreshGobleContext() {
       if (chrome.runtime.lastError) return;
       gobleCtx = (resp && resp.ok && resp.ctx) || null;
       refreshEnvValues();
+      updateHeaderNumbers();
     });
   } catch (_) {}
 }
@@ -326,12 +338,13 @@ chrome.runtime.onMessage.addListener((msg) => {
       snowCtx = msg.ctx;
       refreshEnvValues();
       snowTagCtxTick();
-      updateHeaderSubtitle();
+      updateHeaderNumbers();
     }
   } else if (msg.type === "goble_ctx") {
     if (msg.ctx) {
       gobleCtx = msg.ctx;
       refreshEnvValues();
+      updateHeaderNumbers();
     }
   }
 });
