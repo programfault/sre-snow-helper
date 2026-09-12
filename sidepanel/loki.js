@@ -42,6 +42,7 @@ let lokiError = "";
 let lokiTraceId = ""; // traceId the last completed run was built around
 let lokiResolvedExpr = ""; // expression actually queried in stage 2
 let lokiRunRange = ""; // range label of the last completed run
+let lokiScanned = 0; // stage 2 lines examined (0 results ⇒ tells you why)
 let lokiOverlay = null; // lazily-created results popover
 
 // Local calendar date as "YYYY-MM-DD" — the format <input type="date"> uses.
@@ -185,6 +186,22 @@ function lokiCleanLine(line) {
   return String(line).replace(/\u001b\[[0-9;]*m/g, "");
 }
 
+// Log lines are hand-written, so a value can keep some framing after the match
+// — `[warn]`, `"warn"` or `\"warn\"` should all read as `warn`. Only *wrapping*
+// characters come off, so a message like `[ERROR] disk full` keeps its text.
+function lokiTrimValue(v) {
+  let s = String(v).trim();
+  // Double-encoded lines (`{\"level\":\"warn\"}`) arrive with escaped quotes;
+  // a trailing backslash is what is left when the closing quote was in the class.
+  s = s.replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\+$/, "").trim();
+  s = s.replace(/^["']+/, "").replace(/["']+$/, "").trim();
+  const wrapped = s.match(/^\[([\s\S]*)\]$/);
+  if (wrapped) {
+    s = wrapped[1].trim().replace(/^["']+/, "").replace(/["']+$/, "").trim();
+  }
+  return s.replace(/[}"';,\]]+$/, "").trim(); // leftovers from a bare capture
+}
+
 // Value of one `"name":"value"` field on a log line; "" when the field is
 // absent. Quoted values win so their commas/spaces survive; a bare value is
 // accepted as a fallback for lines that are not strictly JSON.
@@ -192,21 +209,30 @@ function lokiFieldValue(line, name) {
   const clean = lokiCleanLine(line);
   // `edge` keeps `logLevel` / `parentTraceId` from answering for `level` /
   // `traceId`; `[:=]` accepts both JSON (`"level":"error"`) and logfmt
-  // (`level=error`) lines.
-  const head = '(?:^|[^A-Za-z0-9_])["\']?' + name + '["\']?\\s*[:=]\\s*';
+  // (`level=error`) lines; the backslashes tolerate `\"level\":\"error\"`.
+  const head =
+    String.raw`(?:^|[^A-Za-z0-9_])["'\\]*` +
+    name +
+    String.raw`["'\\]*\s*[:=]\s*["'\[\s\\]*`;
   const quoted = clean.match(new RegExp(head + '["\']([^"\']*)["\']', "i"));
-  if (quoted) return quoted[1];
-  const bare = clean.match(new RegExp(head + '([^,"\'}\\s]+)', "i"));
-  return bare ? bare[1] : "";
+  if (quoted) return lokiTrimValue(quoted[1]);
+  const bare = clean.match(new RegExp(head + "([^,\\s]+)", "i"));
+  return bare ? lokiTrimValue(bare[1]) : "";
 }
 
-// Severity of a log line, read from its own `level` field. "" means the line is
-// neither warn nor error, so stage 2 skips it.
+// Severity of a log line, read from its own `level` field. The value is matched
+// loosely on purpose — `"warn"`, `[warn]`, `["WARN"]`, `'error'`, `level=warn`
+// and a nested `\"level\":\"warn\"` all resolve — so bracket, array or
+// re-quoted styles never hide a warn/error row. "" means the line is neither,
+// and stage 2 skips it.
+const LOKI_LEVEL_RE =
+  /(?:^|[^A-Za-z0-9_])["'\\]*level["'\\]*\s*[:=]\s*["'\[\s\\]*(warn|warning|error)\b/i;
+
 function lokiLevelFromLine(line) {
-  const lv = lokiFieldValue(line, "level").toLowerCase();
-  if (lv === "warn" || lv === "warning") return "warn";
-  if (lv === "error") return "error";
-  return "";
+  const m = lokiCleanLine(line).match(LOKI_LEVEL_RE);
+  if (!m) return "";
+  const lv = m[1].toLowerCase();
+  return lv === "warning" ? "warn" : lv;
 }
 
 // Swap the traceId into the expression's first backtick literal:
@@ -242,7 +268,9 @@ async function lokiSeekTraceId(origin, dsUid, expr, range) {
 // returned newest first (the walk visits them in that order).
 async function lokiFetchWarnErrors(origin, dsUid, expr, range) {
   const out = [];
+  let scanned = 0;
   await lokiWalkLines(origin, dsUid, expr, range, LOKI_FETCH_LIMIT, (it) => {
+    scanned++;
     const level = lokiLevelFromLine(it.line);
     if (!level) return false; // not warn/error — keep looking
     out.push({
@@ -256,6 +284,7 @@ async function lokiFetchWarnErrors(origin, dsUid, expr, range) {
     });
     return out.length >= LOKI_MAX_RESULTS; // the newest five are enough
   });
+  lokiScanned = scanned;
   return out;
 }
 
@@ -300,6 +329,7 @@ async function startGrafanaQuery() {
   lokiError = "";
   lokiTraceId = "";
   lokiResolvedExpr = "";
+  lokiScanned = 0;
   updateLokiStatusUI();
   try {
     const records = await runLokiQuery();
@@ -308,7 +338,13 @@ async function startGrafanaQuery() {
       "Logs",
       records.length
         ? "traceId " + lokiTraceId + ": " + records.length + " warn/error line(s)."
-        : "traceId " + lokiTraceId + ": no warn/error lines in " + lokiRunRange + "."
+        : "traceId " +
+            lokiTraceId +
+            ": no warn/error lines in " +
+            lokiRunRange +
+            " (scanned " +
+            lokiScanned +
+            " line(s))."
     );
   } catch (e) {
     lokiError = (e && e.message) || String(e);
@@ -385,12 +421,15 @@ function openLokiResults() {
   }
 
   const total = lokiResults.length;
-  meta.textContent =
-    total +
-    " warn/error line(s) · traceId: " +
-    (lokiTraceId || "—") +
-    " · " +
-    lokiRunRange;
+  const metaParts = [
+    total + " warn/error line(s)",
+    "traceId: " + (lokiTraceId || "—"),
+    lokiRunRange,
+  ];
+  // An empty result set is ambiguous — "nothing matched the trace" reads very
+  // differently from "rows came back but none had level warn/error".
+  if (!total) metaParts.push("scanned " + lokiScanned + " line(s)");
+  meta.textContent = metaParts.join(" · ");
   const footParts = [];
   if (total >= LOKI_MAX_RESULTS) {
     footParts.push("showing the newest " + LOKI_MAX_RESULTS + " warn/error lines");
