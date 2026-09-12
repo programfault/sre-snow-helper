@@ -25,6 +25,7 @@ const openOptionsBtn = document.getElementById("openOptions");
 const envInfoBtn = document.getElementById("envInfoBtn");
 const envRefreshBtn = document.getElementById("envRefreshBtn");
 const envPopoverEl = document.getElementById("envPopover");
+const headerSubtitleEl = document.getElementById("headerSubtitle");
 
 // ServiceNow incident context — mirrors the LAST non-empty capture kept by
 // background.js (same data source as Options → Environment). Replaced whenever

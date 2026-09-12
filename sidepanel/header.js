@@ -254,6 +254,7 @@ function refreshEnvFromActiveTab() {
   Promise.all([pokeSnow, pokeGoble]).then(() => {
     envRefreshBtn.classList.remove("busy");
     snowTagCtxTick();
+    updateHeaderSubtitle();
     // Show the result: open the popover if it isn't already, so the user sees
     // the freshly captured values right away.
     if (envPopoverEl.classList.contains("hidden")) openEnvPopover();
@@ -267,6 +268,26 @@ if (envRefreshBtn) {
 
 buildEnvPopover();
 
+/* Header second line — the captured ServiceNow incident number.
+ *
+ * Reading the number off the header is faster than opening the Environment
+ * popover to compare it against the page in front of you. It shows the same
+ * snowCtx.number the popover lists as "Incident", so the two can never
+ * disagree; while nothing has been captured it falls back to the plain
+ * product label the markup ships with. */
+function updateHeaderSubtitle() {
+  if (!headerSubtitleEl) return;
+  const c = snowCtx || {};
+  const number = c.number ? String(c.number) : "";
+  headerSubtitleEl.textContent = number || "Servicenow";
+  headerSubtitleEl.classList.toggle("has-number", !!number);
+  headerSubtitleEl.title = number
+    ? "ServiceNow incident " + number + (c.instance ? " · " + c.instance : "")
+    : "ServiceNow incident number (none captured yet)";
+}
+
+updateHeaderSubtitle();
+
 // Pull the background's most recent ServiceNow snapshot into snowCtx. The
 // background keeps the LAST non-empty capture (the same source the Options
 // Environment page reads) rather than an active-tab-relative value — so
@@ -278,6 +299,7 @@ function refreshSnowContext() {
       snowCtx = (resp && resp.ok && resp.ctx) || null;
       refreshEnvValues();
       snowTagCtxTick();
+      updateHeaderSubtitle();
     });
   } catch (_) {}
 }
@@ -304,6 +326,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       snowCtx = msg.ctx;
       refreshEnvValues();
       snowTagCtxTick();
+      updateHeaderSubtitle();
     }
   } else if (msg.type === "goble_ctx") {
     if (msg.ctx) {

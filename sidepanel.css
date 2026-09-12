@@ -94,6 +94,15 @@ body {
   color: var(--muted);
 }
 
+/* Header shows the captured incident number instead of the product label, so
+   give it the look of a value rather than a caption. */
+.subtitle.has-number {
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: 0.2px;
+}
+
 .icon-btn {
   background: transparent;
   border: none;
