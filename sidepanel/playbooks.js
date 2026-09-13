@@ -26,15 +26,19 @@ function render(data) {
   updateMonitorDot(chatRules);
 
   contentEl.innerHTML = "";
+  pinnedEl.innerHTML = "";
 
   const hasFlows = playbooks.length > 0 || services.length > 0;
   const hasTemplates = queryTemplates.length > 0;
   // (No whole-panel empty state anymore: the Logs card below is always useful.)
 
-  // 2) Tags card — needs a captured ServiceNow context to be useful, so it is
-  //    only shown when there is flow content below it.
+  // 2) Pinned strip — the ServiceNow lookup card always, then the Tags card.
+  //    Both sit above the scrolling content and stay put while the panels
+  //    below scroll. The Tags card needs a captured ServiceNow context to be
+  //    useful, so it is only shown when there is flow content below it.
+  pinnedEl.appendChild(renderSnowIncidentPanel());
   if (hasFlows) {
-    contentEl.appendChild(renderBaseTagsPanel());
+    pinnedEl.appendChild(renderBaseTagsPanel());
     snowTagCtxTick(); // initial Add-button state from whatever ctx we hold
   }
 

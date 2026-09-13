@@ -43,6 +43,11 @@
     <div id="envPopover" class="ctx-popover hidden" role="dialog" aria-label="Environment variables"></div>
   </header>
 
+  <!-- Pinned context strip: the ServiceNow incident lookup card and the Tags
+       card are rendered here (see sidepanel/playbooks.js render()) and stay put
+       while the panels in .content scroll below. -->
+  <div class="pinned" id="pinnedBar"></div>
+
   <main class="content" id="content"></main>
 
   <script src="yaml-lite.js"></script>

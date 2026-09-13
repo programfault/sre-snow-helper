@@ -1,4 +1,5 @@
-/* tags.js — Tags base panel shell + ServiceNow Labels (tag) picker. */
+/* tags.js — Pinned ServiceNow cards: incident lookup (GoTo) + Tags base panel
+   shell + ServiceNow Labels (tag) picker. */
 
 // The Labels card — its own card, sitting above the playbooks / services
 // panels, so refreshing the captured context never re-fetches the label list
@@ -452,4 +453,156 @@ function buildSnowTagSection() {
 
   repaintAll();
   return root;
+}
+
+/* ---------- ServiceNow incident lookup (GoTo) ---------- */
+//
+// The pinned ServiceNow card at the very top of the side panel: type an
+// incident number, press GoTo, and the number is resolved to its sys_id through
+// the Table API (the same request the manual console snippet runs) before
+// opening that record in a new tab.
+//
+// The instance + CSRF token come from the captured ServiceNow context, so the
+// lookup rides the browser's ServiceNow session — no extra login. The field is
+// seeded from the captured incident on render; afterwards it is the user's own
+// destination, so context broadcasts never overwrite what was typed.
+
+let snowGoToValue = ""; // last typed incident number (survives full re-renders)
+
+function renderSnowIncidentPanel() {
+  const card = document.createElement("div");
+  card.className = "snow-info snow-info-goto";
+
+  const head = document.createElement("div");
+  head.className = "snow-info-head";
+  const icon = document.createElement("span");
+  icon.className = "snow-info-icon";
+  icon.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>';
+  const title = document.createElement("span");
+  title.className = "snow-info-title";
+  title.textContent = "ServiceNow";
+  head.appendChild(icon);
+  head.appendChild(title);
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "snow-goto-body";
+  const row = document.createElement("div");
+  row.className = "snow-goto-row";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "snow-goto-input";
+  input.placeholder = "Incident number, e.g. INC0010001";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.value =
+    snowGoToValue || (snowCtx && snowCtx.number ? String(snowCtx.number) : "");
+
+  const goBtn = document.createElement("button");
+  goBtn.type = "button";
+  goBtn.className = "snow-tags-btn snow-goto-btn";
+  goBtn.textContent = "GoTo";
+  goBtn.title = "Resolve this incident number and open it in a new tab";
+
+  row.appendChild(input);
+  row.appendChild(goBtn);
+  body.appendChild(row);
+  card.appendChild(body);
+
+  input.addEventListener("input", () => {
+    snowGoToValue = input.value;
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.keyCode === 13) {
+      e.preventDefault();
+      snowGoToIncident(input.value, goBtn);
+    }
+  });
+  goBtn.addEventListener("click", () => snowGoToIncident(input.value, goBtn));
+
+  return card;
+}
+
+// Resolve an incident number to its sys_id on the captured instance, using the
+// same Table API request as the manual console snippet:
+//   GET /api/now/table/incident?sysparm_query=number=…&sysparm_fields=sys_id,number&sysparm_limit=1
+// with the captured UserToken as X-UserToken and the browser's ServiceNow
+// session cookies — exactly how snowFetchLabels talks to the instance.
+async function snowLookupIncidentSysId(number) {
+  const c = snowCtx || {};
+  if (!c.instance) {
+    throw new Error("No ServiceNow instance captured. Open an incident page first.");
+  }
+  if (!c.token) {
+    throw new Error(
+      "No UserToken captured. Open / refresh the incident page so the token is captured."
+    );
+  }
+  const qs = new URLSearchParams({
+    sysparm_query: "number=" + number,
+    sysparm_fields: "sys_id,number",
+    sysparm_limit: "1",
+  });
+  const url =
+    "https://" + c.instance + "/api/now/table/incident?" + qs.toString();
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      headers: { Accept: "application/json", "X-UserToken": String(c.token) },
+    });
+  } catch (e) {
+    throw new Error(
+      "Network error while looking up the incident: " + ((e && e.message) || e)
+    );
+  }
+  if (!resp.ok) {
+    let msg = "HTTP " + resp.status;
+    try {
+      const j = await resp.json();
+      if (j && j.error && j.error.message) msg += " — " + j.error.message;
+    } catch (_) {}
+    throw new Error("Incident lookup failed (" + msg + ").");
+  }
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch (_) {}
+  const row = data && Array.isArray(data.result) ? data.result[0] : null;
+  if (!row || !row.sys_id) {
+    throw new Error("Incident " + number + " was not found.");
+  }
+  return String(row.sys_id);
+}
+
+// GoTo: validate → resolve the sys_id → open the record in a new tab. The
+// button stays disabled until the lookup settles, so a slow instance can't be
+// clicked into two tabs.
+function snowGoToIncident(raw, btn) {
+  const number = String(raw || "").trim();
+  if (!number) {
+    toast.info("ServiceNow", "Type an incident number first.");
+    return;
+  }
+  if (btn) btn.disabled = true;
+  const settle = () => {
+    if (btn) btn.disabled = false;
+  };
+  snowLookupIncidentSysId(number)
+    .then((sysid) => {
+      const instance = (snowCtx && snowCtx.instance) || "";
+      const url =
+        "https://" + instance + "/incident.do?sys_id=" + encodeURIComponent(sysid);
+      chrome.tabs.create({ url, active: true }, () => {
+        void chrome.runtime.lastError;
+        settle();
+      });
+    })
+    .catch((err) => {
+      settle();
+      toast.error("ServiceNow", String((err && err.message) || err));
+    });
 }

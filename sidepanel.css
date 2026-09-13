@@ -146,11 +146,23 @@ body {
   gap: 0;
 }
 
+/* ---------- Pinned context strip ---------- */
+/* Sits between the header and the scrolling content: the ServiceNow incident
+   lookup and the Tags cards are rendered here and stay put while the panels
+   below scroll. position/z-index lift the label dropdown these cards open over
+   the scrolling area underneath. */
+.pinned {
+  position: relative;
+  z-index: 6;
+  flex: 0 0 auto;
+  background: var(--card-bg);
+}
+
 /* Content panels span edge to edge, matching the Base Info strip above.
    A bottom rule separates stacked panels; internals keep their own chrome.
    flex-shrink: 0 keeps tall panels from being squashed — the container scrolls. */
 .content > .mega-panel,
-.content > .snow-info.snow-info-tags {
+.pinned > .snow-info {
   flex-shrink: 0;
   border: none;
   border-radius: 0;
@@ -971,6 +983,48 @@ body {
 .snow-copy-btn.disabled {
   opacity: 0.35;
   pointer-events: none;
+}
+
+/* ---------- ServiceNow incident lookup card ---------- */
+/* Pinned above the Tags card: an incident-number field + GoTo, which resolves
+   the number to its sys_id and opens the record in a new tab. */
+.snow-goto-body {
+  padding: 0 14px 12px;
+}
+
+.snow-goto-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.snow-goto-input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+}
+
+.snow-goto-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+
+.snow-goto-input::placeholder {
+  color: var(--muted);
+}
+
+.snow-goto-btn {
+  border: none;
+  background: var(--primary);
+  color: #fff;
 }
 
 /* ---------- ServiceNow Labels (tag) picker ---------- */

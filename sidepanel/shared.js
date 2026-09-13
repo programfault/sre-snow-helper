@@ -21,6 +21,9 @@ const Y = SRE_YAML;
 let srePanelState = { megaCollapsed: {}, cardCollapsed: {} };
 
 const contentEl = document.getElementById("content");
+// Pinned strip between the header and the scrolling content: hosts the
+// ServiceNow lookup + Tags cards so they never scroll away.
+const pinnedEl = document.getElementById("pinnedBar");
 const openOptionsBtn = document.getElementById("openOptions");
 const envInfoBtn = document.getElementById("envInfoBtn");
 const envRefreshBtn = document.getElementById("envRefreshBtn");
