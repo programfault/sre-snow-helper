@@ -57,13 +57,6 @@ body {
   gap: 4px;
 }
 
-/* Monitor status dot lives in the header, left of the settings button. */
-.header-actions .monitor-status-dot {
-  width: 9px;
-  height: 9px;
-  cursor: help;
-}
-
 .brand {
   display: flex;
   align-items: center;
@@ -71,6 +64,7 @@ body {
 }
 
 .logo {
+  position: relative; /* anchor for the monitor glow ring below */
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -81,6 +75,51 @@ body {
   justify-content: center;
   font-weight: 700;
   font-size: 18px;
+}
+
+/* Monitor signal — the header no longer carries a separate status dot. While at
+   least one chat rule is enabled a green light runs all the way around the
+   brand mark's border; otherwise the logo stays plain. */
+.logo.monitoring {
+  box-shadow: 0 0 6px rgba(0, 168, 112, 0.3);
+}
+.logo.monitoring::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px; /* thin band that hugs the logo's border */
+  border-radius: 9.5px;
+  padding: 1.5px;
+  /* Green at full ring strength with two brighter hot spots 180° apart, so the
+     light reads as running around the frame instead of blinking in one place. */
+  background: conic-gradient(
+    from var(--glow-angle),
+    rgba(0, 178, 118, 0.5) 0deg,
+    rgba(0, 240, 165, 0.9) 60deg,
+    rgba(0, 178, 118, 0.5) 120deg,
+    rgba(0, 178, 118, 0.5) 180deg,
+    rgba(0, 240, 165, 0.9) 240deg,
+    rgba(0, 178, 118, 0.5) 300deg,
+    rgba(0, 178, 118, 0.5) 360deg
+  );
+  /* Punch the middle out so only the border band is painted. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: logo-glow-spin 1.8s linear infinite;
+}
+/* Registered so the sweep angle interpolates smoothly (plain custom props
+   would jump straight from 0deg to 360deg). */
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes logo-glow-spin {
+  to {
+    --glow-angle: 360deg;
+  }
 }
 
 .brand-text h1 {
@@ -749,24 +788,6 @@ body {
     opacity: 0;
     transform: translateX(20px);
   }
-}
-
-/* ---------- Monitor status dot (header signal) ---------- */
-.monitor-status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px rgba(0, 168, 112, 0.15);
-  animation: pulse 2s infinite;
-  flex-shrink: 0;
-}
-.monitor-status-dot.off {
-  background: var(--muted);
-  box-shadow: none;
-  animation: none;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 
 /* ---------- Services panel ---------- */

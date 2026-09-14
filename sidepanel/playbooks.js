@@ -4,12 +4,14 @@
 
 /* ---------- Rendering ---------- */
 
-function updateMonitorDot(rules) {
-  const dot = document.getElementById("monitorDot");
-  if (!dot) return;
+/* The header has no dedicated status dot anymore: the brand mark itself shows
+   the monitor state (green halo + rotating light when a rule is enabled). */
+function updateMonitorGlow(rules) {
+  const logo = document.querySelector(".logo");
+  if (!logo) return;
   const anyEnabled = (rules || []).some((r) => r.enabled);
-  dot.classList.toggle("off", !anyEnabled);
-  dot.title = anyEnabled
+  logo.classList.toggle("monitoring", anyEnabled);
+  logo.title = anyEnabled
     ? "Chat monitor on"
     : "Chat monitor off — enable a rule in options → Notification";
 }
@@ -22,8 +24,8 @@ function render(data) {
   const chatRules = data.chatRules || [];
   const queryTemplates = data.queryTemplates || [];
 
-  // 1) Header monitor signal — always present, left of the settings button.
-  updateMonitorDot(chatRules);
+  // 1) Header monitor signal — the brand mark glows while monitoring is live.
+  updateMonitorGlow(chatRules);
 
   contentEl.innerHTML = "";
   pinnedEl.innerHTML = "";

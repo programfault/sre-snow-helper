@@ -29,11 +29,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     loadState((data) => render(data));
     return;
   }
-  // Chat monitor / rules only drive the header dot — refresh it in place.
+  // Chat monitor / rules only drive the header brand glow — refresh it in place.
   // (sreRingtones has no visual effect on this panel and is ignored here.)
   if (changes.sreChatMonitor || changes.sreChatSpaceRules) {
     chrome.storage.local.get("sreChatSpaceRules", (d) => {
-      updateMonitorDot(
+      updateMonitorGlow(
         Array.isArray(d.sreChatSpaceRules) ? d.sreChatSpaceRules : []
       );
     });
