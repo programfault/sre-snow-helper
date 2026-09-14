@@ -209,6 +209,72 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeEnvPopover();
 });
 
+/* Header "format clipboard" button — re-emit clipboard JSON as raw CSV.
+ *
+ * Sandbox / API responses often come back as a tiny JSON envelope:
+ *   {"finalCsv": "a,b,c\n1,2,3\n..."}
+ * The CSV line breaks survive only as escaped \n inside the JSON string, so
+ * pasting the raw payload into a .csv file yields one long line littered with
+ * "\n" text. This button parses the clipboard, lifts the CSV string out (the
+ * finalCsv key when present, otherwise the only string value), turns the
+ * escapes back into real line breaks and puts the result on the clipboard —
+ * ready for a plain Ctrl+V into a CSV file.
+ */
+
+// Extract the CSV string from a JSON envelope, or null when the text is not
+// JSON / carries no usable string value.
+function clipboardJsonToCsv(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (_) {
+    return null;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+
+  let csv = typeof data.finalCsv === "string" ? data.finalCsv : null;
+  if (csv === null) {
+    const strings = Object.keys(data)
+      .map((k) => data[k])
+      .filter((v) => typeof v === "string");
+    if (strings.length === 1) csv = strings[0];
+  }
+  if (csv === null) return null;
+
+  // Envelopes that were escaped twice still reach us with literal \n / \r\n.
+  return csv.replace(/\\r\\n|\\n/g, "\n");
+}
+
+function formatClipboardCsv() {
+  readClipboardText().then((text) => {
+    const raw = String(text || "").trim();
+    if (!raw) {
+      toast.info("Clipboard empty", "Copy the JSON payload first.");
+      return;
+    }
+    const csv = clipboardJsonToCsv(raw);
+    if (csv === null) {
+      toast.error(
+        "Unsupported clipboard",
+        "Clipboard is not JSON holding a CSV value."
+      );
+      return;
+    }
+    return copyToClipboard(csv).then((ok) => {
+      if (!ok) {
+        toast.error("Copy failed", "Could not write the CSV back to the clipboard.");
+        return;
+      }
+      const lines = csv.split("\n").filter((l) => l.length > 0).length;
+      toast.success("CSV copied", lines + " CSV lines are on the clipboard.");
+    });
+  });
+}
+
+if (csvFormatBtn) {
+  csvFormatBtn.addEventListener("click", formatClipboardCsv);
+}
+
 /* Header refresh button — force a re-probe of the ACTIVE tab.
  *
  * Unlike the Options page's Refresh (which has to guess which tab to poke when

@@ -159,7 +159,7 @@ function renderPlaybookCard(pb, common, forms) {
   const dryBtn = document.createElement("button");
   dryBtn.className = "btn-execute btn-dryrun";
   dryBtn.textContent = "Dry Run";
-  dryBtn.title = "仅预览：解析参数并展示每个 step 的载荷，不真正执行";
+  dryBtn.title = "Preview only: resolve params and show each step's payload without executing";
   dryBtn.addEventListener("click", () => {
     executePlaybook(card, pb, flow, pbParams, commonParams, common, { dryRun: true });
   });

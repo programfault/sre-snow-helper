@@ -105,7 +105,7 @@ function showCsvView() {
   clearCsvError();
   document.getElementById(FORM_FORM_WRAP_ID).style.display = "none";
   document.getElementById(FORM_CSV_WRAP_ID).classList.add("open");
-  document.getElementById("toggleFormCsv").textContent = "表格视图";
+  document.getElementById("toggleFormCsv").textContent = "Table view";
 }
 
 function showTableView() {
@@ -113,7 +113,7 @@ function showTableView() {
   clearCsvError();
   document.getElementById(FORM_CSV_WRAP_ID).classList.remove("open");
   document.getElementById(FORM_FORM_WRAP_ID).style.display = "";
-  document.getElementById("toggleFormCsv").textContent = "CSV 编辑";
+  document.getElementById("toggleFormCsv").textContent = "CSV editor";
 }
 
 function renderForms() {

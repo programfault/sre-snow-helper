@@ -27,6 +27,7 @@ const pinnedEl = document.getElementById("pinnedBar");
 const openOptionsBtn = document.getElementById("openOptions");
 const envInfoBtn = document.getElementById("envInfoBtn");
 const envRefreshBtn = document.getElementById("envRefreshBtn");
+const csvFormatBtn = document.getElementById("csvFormatBtn");
 const envPopoverEl = document.getElementById("envPopover");
 const headerSubtitleEl = document.getElementById("headerSubtitle");
 const headerWorkOrderEl = document.getElementById("headerWorkOrder");
@@ -92,6 +93,19 @@ function legacyCopy(text) {
   } catch (_) {}
   document.body.removeChild(ta);
   return ok;
+}
+
+// Read plain text from the clipboard. The side panel is a focused extension
+// document and the manifest declares clipboardRead, so the async API is
+// available; resolves "" when the clipboard is empty or unreadable.
+function readClipboardText() {
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    return navigator.clipboard.readText().then(
+      (t) => String(t == null ? "" : t),
+      () => ""
+    );
+  }
+  return Promise.resolve("");
 }
 
 /* ---------- Storage ---------- */
