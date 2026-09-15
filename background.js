@@ -479,6 +479,7 @@ function isGobleUrl(url) {
   return (
     h === "globe.com.ph" ||
     h.endsWith(".globe.com.ph") ||
+    h.endsWith(".globetel.com") ||
     h === "gsmgt-prod.gobetel.com" // exact host; second FSM order site
   );
 }
