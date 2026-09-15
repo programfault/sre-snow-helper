@@ -2,6 +2,7 @@
 //
 // Runs on the FSM order sites at document_idle:
 //   * fsm.globe.com.ph (and other globe.com.ph subdomains)
+//   * *.globetel.com  (the same app on the globetel.com domain)
 //   * gsmgt-prod.gobetel.com  (exact host; same capture logic as globe.com.ph)
 // It reads three values straight off the page the user is looking at,
 // whenever they can be found:
@@ -23,6 +24,7 @@
   const isGoble =
     host === "globe.com.ph" ||
     host.endsWith(".globe.com.ph") ||
+    host.endsWith(".globetel.com") ||
     host === "gsmgt-prod.gobetel.com";
   if (!isGoble) return;
 

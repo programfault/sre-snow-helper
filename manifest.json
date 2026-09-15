@@ -10,6 +10,7 @@
     "*://globe.com.ph/*",
     "*://*.globe.com.ph/*",
     "https://gsmgt-prod.gobetel.com/*",
+    "https://*.globetel.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -36,7 +37,8 @@
       "matches": [
         "*://globe.com.ph/*",
         "*://*.globe.com.ph/*",
-        "https://gsmgt-prod.gobetel.com/*"
+        "https://gsmgt-prod.gobetel.com/*",
+        "https://*.globetel.com/*"
       ],
       "js": ["goble-content.js"],
       "run_at": "document_idle",

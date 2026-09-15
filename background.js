@@ -452,13 +452,14 @@ function snowMergeReport(tabId, ctx) {
   snowBroadcast();
 }
 
-/* ---------- FSM order-page context broker (globe.com.ph / gsmgt-prod.gobetel.com) ---------- */
+/* ---------- FSM order-page context broker (globe.com.ph / globetel.com) ---------- */
 //
 // goble-content.js reports the order fields visible on the current FSM order
 // page (fwo = OrderNumber, fsid = serviceid, factok = accesstoken). Pages that
 // cannot extract a field report it as "" so a plain page clears stale values.
-// Two hosts run the same app: globe.com.ph (+ subdomains) and, matched exactly,
-// gsmgt-prod.gobetel.com. This broker mirrors the ServiceNow one: merge per
+// The same app is served from globe.com.ph (+ subdomains) and globetel.com
+// (+ subdomains, e.g. fsgmt-pprod.globetel.com). This broker mirrors the
+// ServiceNow one: merge per
 // tab, broadcast the ACTIVE tab's snapshot as "goble_ctx" (null once the active
 // tab leaves an FSM page), and keep a "last" non-empty snapshot for the Options
 // Environment page. The side panel exposes the fields as ${f_wo_number} /
@@ -656,6 +657,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           "*://globe.com.ph/*",
           "*://*.globe.com.ph/*",
           "https://gsmgt-prod.gobetel.com/*",
+          "https://*.globetel.com/*",
         ],
       },
       (tabs) => {
