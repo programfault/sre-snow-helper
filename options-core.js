@@ -90,7 +90,13 @@ function escapeHtml(s) {
 /* ---------- Storage helpers ---------- */
 function persistBundleDoc() {
   if (bundleDoc) {
-    chrome.storage.local.set({ [BUNDLE_DOC_STORE.storageKey]: bundleDoc });
+    // Saving the bundle makes it authoritative — always set the migration
+    // marker so the sidepanel switches to it even if the one-time migration
+    // in options-init was skipped (empty seeded bundle, fresh install, ...).
+    chrome.storage.local.set({
+      [BUNDLE_DOC_STORE.storageKey]: bundleDoc,
+      sreFlowBundleMigrated: true,
+    });
   }
 }
 function saveBundleDoc() {

@@ -85,12 +85,16 @@ function renderBundleDoc() {
       bundleDoc.yaml = v;
     }
     saveBundleDoc();
-    // Document is dirty again — clear the last validation report.
-    const valEl = document.getElementById("bundleValidation");
-    if (valEl && valEl.classList.contains("visible")) {
-      valEl.classList.remove("visible", "ok", "err", "warn");
-      valEl.innerHTML = "";
-    }
+    // Auto-validate (debounced): a broken bundle silently materializes to
+    // nothing on the side panel — the user must see why, without hunting
+    // for the Validate button.
+    clearTimeout(saveTimers.bundleValidate);
+    saveTimers.bundleValidate = setTimeout(() => {
+      const valEl = document.getElementById("bundleValidation");
+      if (!valEl) return;
+      const gvars = window.SRE_ENV ? SRE_ENV.FIELDS.map((f) => f.gvar) : null;
+      renderValidationBox(valEl, Y.validateBundle((bundleDoc && bundleDoc.yaml) || "", Y.indexForms(forms), gvars));
+    }, 600);
   });
 }
 

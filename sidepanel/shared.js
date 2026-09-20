@@ -136,27 +136,44 @@ function loadState(cb) {
       // only the Labels Refresh button re-fetches).
       snowLabelCache = normalizeLabelCache(data.sreSnowLabels);
 
-      // Flows source of truth: the unified bundle document. Once the one-time
-      // migration marker exists, the bundle is authoritative even when empty
-      // (so an intentionally-emptied bundle never resurrects legacy data).
-      // Before that marker, legacy playbooks + common doc are used directly.
-      // Bundle flows arrive pre-materialized as self-contained playbook yaml
-      // (no `ref:` left) plus a group label for the dropdown.
+      // Flows source of truth: the unified bundle document. The bundle is
+      // authoritative when the one-time migration marker exists OR when the
+      // bundle carries non-empty yaml (belt-and-braces: a bundle authored
+      // directly in the options editor must never be shadowed by legacy data).
+      // Once authoritative, an intentionally-emptied bundle never resurrects
+      // legacy data. Bundle flows arrive pre-materialized as self-contained
+      // playbook yaml (no `ref:` left) plus a group label for the dropdown.
       let playbooks = Array.isArray(data.srePlaybooks) ? data.srePlaybooks : [];
       let commonYaml =
         data.sreCommonSteps && typeof data.sreCommonSteps.yaml === "string"
           ? data.sreCommonSteps.yaml
           : "";
-      if (data.sreFlowBundleMigrated) {
+      const bundleYaml =
+        data.sreFlowBundle && typeof data.sreFlowBundle.yaml === "string"
+          ? data.sreFlowBundle.yaml
+          : "";
+      if (data.sreFlowBundleMigrated || bundleYaml.trim()) {
         playbooks = [];
         commonYaml = "";
-        const bundleYaml =
-          data.sreFlowBundle && typeof data.sreFlowBundle.yaml === "string"
-            ? data.sreFlowBundle.yaml
-            : "";
         if (bundleYaml.trim()) {
-          const mat = Y.materializeBundle(Y.parseBundle(bundleYaml));
-          if (mat.flows.length > 0) playbooks = mat.flows;
+          try {
+            const mat = Y.materializeBundle(Y.parseBundle(bundleYaml));
+            if (mat.flows.length > 0) playbooks = mat.flows;
+            // Materialization-level issues (missing refs/templates) — visible,
+            // non-fatal: still render whatever flows did materialize.
+            if (mat.issues && mat.issues.length > 0) {
+              toast.error(
+                "Flows bundle",
+                `${mat.issues.length} issue(s):\n` + mat.issues.slice(0, 5).join("\n")
+              );
+            }
+          } catch (e) {
+            // A broken bundle must never silently kill the panel render.
+            toast.error(
+              "Flows bundle failed to load",
+              String((e && e.message) || e)
+            );
+          }
         }
       }
 
