@@ -2,10 +2,10 @@
 //
 // Shared by the options page and the side-panel execution UI.
 // Storage layout (chrome.storage.local):
-//   sreCommonSteps: { id, yaml }                 — single shared "Common Steps" document
-//   srePlaybooks:   Array<{ id, yaml, collapsed }>  — orchestration flows
+//   sreFlowBundle:  { id, yaml }                 — unified flows bundle (v3: params + common templates + groups)
 //   sreForms:       Array<{ name, label, value, display, type }>
 //   sreServices:    { id, yaml }                 — single shared "Services" document
+//   srePlaybooks / sreCommonSteps               — LEGACY (kept as backup; migrated once into sreFlowBundle)
 //
 // Services YAML shape (single doc):
 //   services:            top-level list. Each entry is either an API call or a
@@ -734,6 +734,13 @@
           const r = readYamlNode(toks, i + 1, nxt.indent);
           value = r.node;
           i = r.i;
+        } else if (nxt && nxt.indent === indent && isDashText(nxt.text)) {
+          // Standard YAML: a block sequence under a key may sit at the SAME
+          // indent as the key (`params:\n- name: x`). Consume the run of
+          // dash items at this indent as the key's value.
+          const r = readYamlSequence(toks, i + 1, indent);
+          value = r.node;
+          i = r.i;
         } else {
           value = null;
           i++;
@@ -787,6 +794,11 @@
             const nn = toks[j + 1];
             if (nn && nn.indent > t2.indent) {
               const rr = readYamlNode(toks, j + 1, nn.indent);
+              v2 = rr.node;
+              j = rr.i;
+            } else if (nn && nn.indent === t2.indent && isDashText(nn.text)) {
+              // Same-indent block sequence under this key (standard YAML).
+              const rr = readYamlSequence(toks, j + 1, t2.indent);
               v2 = rr.node;
               j = rr.i;
             } else {
@@ -1312,6 +1324,503 @@
       .slice(0, 25);
   }
 
+  /* ---------- Flow bundle (v3 schema: common templates + grouped flows) ----------
+   *
+   * Storage: sreFlowBundle = { id, yaml }. Single YAML doc replacing
+   * sreCommonSteps + srePlaybooks:
+   *
+   *   version: 3
+   *   params:            # named variables — one shared scope for every flow
+   *     - name: business_service
+   *       type: option
+   *   common:            # template library: name + ordered inline steps
+   *     - name: ResolvedTemplate
+   *       steps:
+   *         - name: ack
+   *           action: true
+   *           items: {...}
+   *   groups:            # dropdown group + template binding + nested flows
+   *     - group: Resolved
+   *       common: ResolvedTemplate
+   *       flows:
+   *         - name: Device activation
+   *           items: {...}          # appended after the template steps
+   *
+   * Materialization: every flow becomes a self-contained playbook YAML
+   * (template steps expanded, no `ref:` left) plus the file `params:`.
+   * Variables are ${name}; resolution precedence at run time:
+   *   file params (user input) > captured page globals > free-text prompt.
+   */
+
+  // Captured page-global variable names (mirrors env-defs.js / sidepanel
+  // SN_CTX_VARS + GOB_CTX_VARS). A ${name} outside params + this list is
+  // treated as an ad-hoc free-text input (with a validation warning).
+  const GLOBAL_GVARS = [
+    "number",
+    "userToken",
+    "incidentId",
+    "instance",
+    "caller_name",
+    "caller_sysid",
+    "f_wo_number",
+    "f_sid",
+    "f_access_token",
+  ];
+
+  // ---- serialization helpers ----
+
+  // Emit a scalar as YAML text, quoting whenever the plain form would be
+  // ambiguous (empty, bool/number-like, special leading chars, ": " inside,
+  // newlines, trailing spaces). JSON.stringify produces a double-quoted YAML
+  // scalar whose escapes unescapeDoubleQuoted reverses on parse.
+  function yamlNeedsQuote(s) {
+    if (s === "") return true;
+    if (/^[\s]|[\s]$/.test(s)) return true;
+    if (/^(-|\?|:|,|\[|\]|\{|\}|#|&|\*|!|\||>|%|@|`|"|')/.test(s)) return true;
+    if (/:$|\s:|:\s/.test(s)) return true;
+    if (/[\n\r]/.test(s)) return true;
+    if (/^(true|false|yes|no|on|off|null|~)$/i.test(s)) return true;
+    if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return true;
+    return false;
+  }
+
+  function yamlScalar(v) {
+    if (v === null || v === undefined) return "~";
+    if (typeof v === "boolean") return v ? "true" : "false";
+    if (typeof v === "number") return String(v);
+    const s = String(v);
+    return yamlNeedsQuote(s) ? JSON.stringify(s) : s;
+  }
+
+  // Serialize a form/items map (plain object, possibly nested) as YAML lines
+  // at the given indent. Returns "" for an empty map.
+  function serializeFormMap(form, indent) {
+    const pad = " ".repeat(indent);
+    const lines = [];
+    for (const [k, v] of Object.entries(form || {})) {
+      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+        const inner = serializeFormMap(v, indent + 2);
+        if (inner) {
+          lines.push(`${pad}${yamlScalar(k)}:`);
+          lines.push(inner);
+        } else {
+          lines.push(`${pad}${yamlScalar(k)}: {}`);
+        }
+      } else {
+        lines.push(`${pad}${yamlScalar(k)}: ${yamlScalar(v)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
+  // Stable flow id: djb2 hex of "group/flowName" — survives re-edits and
+  // re-imports so the side panel's remembered selection keeps working.
+  function hashId(s) {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) {
+      h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    }
+    return h.toString(36);
+  }
+
+  // ---- parsing ----
+
+  // Parse the bundle document. Returns { version, params, commons, groups,
+  // rawErrors } where commons = [{name, steps:[{name, action, items}]}] and
+  // groups = [{group, common, flows:[{name, desc, items}]}].
+  function parseBundle(yaml) {
+    const rawErrors = [];
+    let data;
+    try {
+      data = parseNestedYaml(yaml || "");
+    } catch (e) {
+      return { version: 3, params: [], commons: [], groups: [], rawErrors: [`unparseable YAML: ${e.message}`] };
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return { version: 3, params: [], commons: [], groups: [], rawErrors: ["empty or invalid bundle document"] };
+    }
+    const str = (v) => (v == null ? "" : stripQuotes(String(v)));
+    const params = (Array.isArray(data.params) ? data.params : [])
+      .filter((p) => p && typeof p === "object")
+      .map((p) => ({ name: str(p.name), type: str(p.type) || "string" }));
+    const commons = (Array.isArray(data.common) ? data.common : [])
+      .filter((c) => c && typeof c === "object")
+      .map((c) => ({
+        name: str(c.name),
+        steps: (Array.isArray(c.steps) ? c.steps : [])
+          .filter((s) => s && typeof s === "object")
+          .map((s) => ({
+            name: str(s.name),
+            action: parseActionToken(s.action) === true,
+            items: s.items && typeof s.items === "object" && !Array.isArray(s.items) ? s.items : {},
+          })),
+      }));
+    const groups = (Array.isArray(data.groups) ? data.groups : [])
+      .filter((g) => g && typeof g === "object")
+      .map((g) => ({
+        group: str(g.group),
+        common: str(g.common),
+        flows: (Array.isArray(g.flows) ? g.flows : [])
+          .filter((f) => f && typeof f === "object")
+          .map((f) => ({
+            name: str(f.name),
+            desc: str(f.desc),
+            items:
+              f.items && typeof f.items === "object" && !Array.isArray(f.items)
+                ? f.items
+                : null,
+          })),
+      }));
+    return { version: data.version, params, commons, groups, rawErrors };
+  }
+
+  // ---- materialization ----
+
+  // Build one flow's self-contained playbook YAML: header + file params +
+  // expanded steps (template steps first, the flow's own items appended).
+  // Lists are emitted with the legacy two-space indented style so the
+  // line-based parseParams/parseFlow readers accept them unchanged.
+  function bundleFlowYaml(flow, tpl, fileParams) {
+    const lines = [];
+    lines.push(`name: ${yamlScalar(flow.name)}`);
+    if (flow.desc) lines.push(`desc: ${yamlScalar(flow.desc)}`);
+    if (fileParams && fileParams.length > 0) {
+      lines.push("params:");
+      fileParams.forEach((p) => {
+        lines.push(`  - name: ${yamlScalar(p.name)}`);
+        if (p.type && p.type !== "string") lines.push(`    type: ${yamlScalar(p.type)}`);
+      });
+    }
+    const steps = tpl ? tpl.steps.slice() : [];
+    if (flow.items) {
+      steps.push({ name: flow.name, action: false, items: flow.items });
+    }
+    if (steps.length > 0) {
+      lines.push("flow:");
+      steps.forEach((st) => {
+        lines.push(`  - name: ${yamlScalar(st.name || "")}`);
+        if (st.action === true) lines.push("    action: true");
+        const fm = serializeFormMap(st.items, 6);
+        if (fm) {
+          lines.push("    form:");
+          lines.push(fm);
+        }
+      });
+    }
+    return lines.join("\n");
+  }
+
+  // Materialize the parsed bundle into the shape the side panel consumes:
+  // { flows: [{id, group, yaml}], issues: string[] }.
+  function materializeBundle(parsed) {
+    const tplByName = new Map((parsed.commons || []).map((c) => [c.name, c]));
+    const flows = [];
+    const issues = [];
+    (parsed.groups || []).forEach((g) => {
+      const tpl = g.common ? tplByName.get(g.common) : null;
+      if (g.common && !tpl) {
+        issues.push(`group "${g.group}": common template "${g.common}" not found`);
+      }
+      (g.flows || []).forEach((f) => {
+        flows.push({
+          id: "fb-" + hashId(g.group + "/" + f.name),
+          group: g.group,
+          yaml: bundleFlowYaml(f, tpl, parsed.params),
+        });
+      });
+    });
+    return { flows, issues };
+  }
+
+  // ---- validation ----
+
+  // Validate the whole bundle: structure, references, uniqueness, form values
+  // (against the Form library) and variable names. Returns {ok, errors,
+  // warnings}. `knownGlobals` overrides the default captured-global list.
+  function validateBundle(yaml, formsByName, knownGlobals) {
+    const errors = [];
+    const warnings = [];
+    if (!String(yaml || "").trim()) {
+      return { ok: true, errors, warnings: ["bundle document is empty"] };
+    }
+    const parsed = parseBundle(yaml || "");
+    errors.push(...parsed.rawErrors);
+
+    const gvars = Array.isArray(knownGlobals) ? knownGlobals : GLOBAL_GVARS;
+
+    // Form check that tolerates ${variable} references: a value containing a
+    // placeholder can only be validated after resolution, so only the KEY
+    // existence is enforced for it (the fixed-value check is skipped).
+    const validateFormVars = (formMap, formsByName, varNames) => {
+      const errs = [];
+      for (const [key, val] of Object.entries(formMap || {})) {
+        const defs = formsByName.get(key);
+        if (!defs || defs.length === 0) {
+          errs.push(`form key "${key}" is not defined in the Form library`);
+          continue;
+        }
+        if (typeof val === "string" && extractPlaceholderNames(val).length > 0) {
+          continue; // resolved at run time — nothing to compare yet
+        }
+        const fixedValues = defs
+          .filter((d) => d.type && d.type !== "string")
+          .map((d) => String(d.value ?? ""));
+        if (fixedValues.length > 0 && fixedValues.indexOf(String(val)) === -1) {
+          errs.push(
+            `form key "${key}" must be one of ${fixedValues
+              .map((x) => `"${x}"`)
+              .join(", ")}, got "${val}"`
+          );
+        }
+      }
+      return { ok: errs.length === 0, errors: errs };
+    };
+    const declaredVars = new Set([...parsed.params.map((p) => p.name), ...gvars]);
+
+    // params
+    const paramNames = new Set();
+    parsed.params.forEach((p, i) => {
+      if (!p.name) {
+        errors.push(`params[${i + 1}]: missing name`);
+        return;
+      }
+      if (paramNames.has(p.name)) {
+        errors.push(`params: duplicate name "${p.name}"`);
+      }
+      paramNames.add(p.name);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(p.name)) {
+        warnings.push(`params: "${p.name}" — prefer [A-Za-z0-9_] variable names`);
+      }
+    });
+
+    // templates
+    const tplNames = new Set();
+    parsed.commons.forEach((c, i) => {
+      const where = c.name ? `common "${c.name}"` : `common[${i + 1}]`;
+      if (!c.name) {
+        errors.push(`${where}: missing name`);
+      } else if (tplNames.has(c.name)) {
+        errors.push(`common: duplicate template name "${c.name}"`);
+      }
+      tplNames.add(c.name);
+      const stepNames = new Set();
+      if (c.steps.length === 0) warnings.push(`${where}: template has no steps`);
+      c.steps.forEach((s, si) => {
+        if (!s.name) errors.push(`${where} step ${si + 1}: missing name`);
+        else if (stepNames.has(s.name)) errors.push(`${where}: duplicate step name "${s.name}"`);
+        stepNames.add(s.name);
+        const fv = validateFormVars(s.items || {}, formsByName, declaredVars);
+        if (!fv.ok) errors.push(...fv.errors.map((e) => `${where} step "${s.name || si + 1}": ${e}`));
+      });
+    });
+
+    // groups + flows
+    const groupNames = new Set();
+    parsed.groups.forEach((g, gi) => {
+      const gwhere = g.group ? `group "${g.group}"` : `groups[${gi + 1}]`;
+      if (!g.group) errors.push(`${gwhere}: missing group name`);
+      else if (groupNames.has(g.group)) errors.push(`groups: duplicate group name "${g.group}"`);
+      groupNames.add(g.group);
+      if (g.common && !tplNames.has(g.common)) {
+        errors.push(`${gwhere}: common template "${g.common}" not found`);
+      }
+      const flowNames = new Set();
+      if (!g.flows || g.flows.length === 0) warnings.push(`${gwhere}: no flows`);
+      (g.flows || []).forEach((f, fi) => {
+        const fwhere = f.name ? `flow "${f.name}"` : `${gwhere} flow ${fi + 1}`;
+        if (!f.name) errors.push(`${gwhere} flow ${fi + 1}: missing name`);
+        else if (flowNames.has(f.name)) errors.push(`${gwhere}: duplicate flow name "${f.name}"`);
+        flowNames.add(f.name);
+        const items = f.items || {};
+        const fv = validateFormVars(items, formsByName, declaredVars);
+        if (!fv.ok) errors.push(...fv.errors.map((e) => `${gwhere} flow "${f.name || fi + 1}": ${e}`));
+        // variable references
+        Object.entries(items).forEach(([k, v]) => {
+          if (typeof v !== "string") return;
+          extractPlaceholderNames(v).forEach((n) => {
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) {
+              warnings.push(`${fwhere}: variable "\${${n}}" — prefer [A-Za-z0-9_] names`);
+            }
+            if (!paramNames.has(n) && gvars.indexOf(n) === -1) {
+              warnings.push(
+                `${fwhere}: "\${${n}}" is not a file param or captured global — it will be asked as a free-text input`
+              );
+            }
+          });
+        });
+      });
+    });
+
+    // template step variables (they resolve against file params + globals too)
+    parsed.commons.forEach((c) => {
+      c.steps.forEach((s) => {
+        Object.entries(s.items || {}).forEach(([k, v]) => {
+          if (typeof v !== "string") return;
+          extractPlaceholderNames(v).forEach((n) => {
+            if (!paramNames.has(n) && gvars.indexOf(n) === -1) {
+              warnings.push(
+                `common "${c.name}" step "${s.name || ""}": "\${${n}}" is not a file param or captured global`
+              );
+            }
+          });
+        });
+      });
+    });
+
+    return { ok: errors.length === 0, errors, warnings };
+  }
+
+  // ---- legacy migration ----
+
+  // Rewrite ${paramN} tokens into ${paramName} using a doc's params list.
+  // Tokens without a matching index are left untouched (validation flags them).
+  function rewriteParamTokens(str, tokenMap) {
+    if (typeof str !== "string") return str;
+    return str.replace(/\$\{\s*param(\d+)\s*\}/g, (m, d) => {
+      const name = tokenMap["param" + d];
+      return name ? "${" + name + "}" : m;
+    });
+  }
+
+  function rewriteFormTokens(form, tokenMap) {
+    const out = {};
+    Object.entries(form || {}).forEach(([k, v]) => {
+      out[k] =
+        typeof v === "string"
+          ? rewriteParamTokens(v, tokenMap)
+          : v !== null && typeof v === "object" && !Array.isArray(v)
+            ? rewriteFormTokens(v, tokenMap)
+            : v;
+    });
+    return out;
+  }
+
+  // Convert the legacy storage (srePlaybooks cards + sreCommonSteps doc) into
+  // bundle YAML. Each legacy card becomes one group whose template holds the
+  // card's full expanded step sequence (refs resolved against the common doc)
+  // and whose single flow replays it. ${paramN} tokens are rewritten to the
+  // named variables declared by the merged file-level params list.
+  function migrateLegacy(opts) {
+    const playbooks = (opts && opts.playbooks) || [];
+    const commonDoc = parseCommonSteps((opts && opts.commonYaml) || "");
+    const cParams = commonDoc.params || [];
+    const cSteps = commonDoc.steps || {};
+
+    const commonTokenMap = {};
+    cParams.forEach((p, i) => {
+      if (p && p.name) commonTokenMap["param" + i] = p.name;
+    });
+
+    // File-level params: common doc params first, then card params (deduped).
+    const params = cParams
+      .filter((p) => p && p.name)
+      .map((p) => ({ name: p.name, type: p.type || "string" }));
+    const seen = new Set(params.map((p) => p.name));
+
+    const commons = [];
+    const groups = [];
+
+    playbooks.forEach((card, ci) => {
+      const yaml = (card && card.yaml) || "";
+      const header = parseHeader(yaml);
+      const cardParams = parseParams(yaml);
+      const cardTokenMap = {};
+      cardParams.forEach((p, i) => {
+        if (p && p.name) {
+          cardTokenMap["param" + i] = p.name;
+          if (!seen.has(p.name)) {
+            params.push({ name: p.name, type: p.type || "string" });
+            seen.add(p.name);
+          }
+        }
+      });
+
+      const steps = parseFlow(yaml).map((item, si) => {
+        if (item.ref) {
+          const cs = cSteps[item.ref];
+          return {
+            name: item.name || item.ref,
+            action: effectiveAction(item.action, cs && cs.action) === true,
+            items: rewriteFormTokens((cs && cs.form) || {}, commonTokenMap),
+          };
+        }
+        return {
+          name: item.name || `step ${si + 1}`,
+          action: item.action === true,
+          items: rewriteFormTokens(item.form || {}, cardTokenMap),
+        };
+      });
+
+      const baseName = header.name || `Flow ${ci + 1}`;
+      let gName = baseName;
+      let n = 2;
+      while (groups.some((g) => g.group === gName)) gName = `${baseName} ${n++}`;
+      const tplName = `${gName} Template`;
+      commons.push({ name: tplName, steps });
+      groups.push({
+        group: gName,
+        common: tplName,
+        flows: [{ name: header.name || gName, desc: header.desc || "", items: null }],
+      });
+    });
+
+    return serializeBundle({ version: 3, params, commons, groups });
+  }
+
+  // ---- bundle serializer ----
+
+  // Serialize a parsed bundle structure back to YAML text (used by migration
+  // and handy for round-tripping).
+  function serializeBundle(parsed) {
+    const lines = [];
+    lines.push("version: 3");
+    lines.push("");
+    if (parsed.params && parsed.params.length) {
+      lines.push("# Named variables shared by every flow (file params win over captured globals)");
+      lines.push("params:");
+      parsed.params.forEach((p) => {
+        lines.push(`  - name: ${yamlScalar(p.name)}`);
+        if (p.type && p.type !== "string") lines.push(`    type: ${yamlScalar(p.type)}`);
+      });
+      lines.push("");
+    }
+    if (parsed.commons && parsed.commons.length) {
+      lines.push("# Template library: each entry is a reusable ordered step sequence");
+      lines.push("common:");
+      parsed.commons.forEach((c) => {
+        lines.push(`  - name: ${yamlScalar(c.name)}`);
+        lines.push("    steps:");
+        (c.steps || []).forEach((s) => {
+          lines.push(`      - name: ${yamlScalar(s.name || "")}`);
+          if (s.action === true) lines.push("        action: true");
+          const fm = serializeFormMap(s.items, 10);
+          if (fm) {
+            lines.push("        items:");
+            lines.push(fm);
+          }
+        });
+      });
+      lines.push("");
+    }
+    lines.push("# Dropdown groups: bind a group name to a template and list its flows");
+    lines.push("groups:");
+    (parsed.groups || []).forEach((g) => {
+      lines.push(`  - group: ${yamlScalar(g.group)}`);
+      if (g.common) lines.push(`    common: ${yamlScalar(g.common)}`);
+      lines.push("    flows:");
+      (g.flows || []).forEach((f) => {
+        lines.push(`      - name: ${yamlScalar(f.name)}`);
+        if (f.desc) lines.push(`        desc: ${yamlScalar(f.desc)}`);
+        const fm = serializeFormMap(f.items, 10);
+        if (fm) {
+          lines.push("        items:");
+          lines.push(fm);
+        }
+      });
+    });
+    return lines.join("\n");
+  }
+
   global.SRE_YAML = {
     ALLOWED_FORM_TYPES,
     stripQuotes,
@@ -1334,6 +1843,12 @@
     parseServicesDoc,
     parseNestedYaml,
     validateServicesDoc,
+    parseBundle,
+    materializeBundle,
+    validateBundle,
+    migrateLegacy,
+    serializeBundle,
+    GLOBAL_GVARS,
     collectServiceInputs,
     resolveTemplate,
     queryPath,

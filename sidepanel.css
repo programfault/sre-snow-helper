@@ -1132,6 +1132,28 @@ body {
   color: var(--primary);
 }
 
+/* Group header row inside the flow picker dropdown (bundle `groups:`). */
+.snow-tag-opt-group {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px 2px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border, #e5e6eb);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The first group header should sit flush with the dropdown top. */
+.snow-tags-drop .snow-tag-opt-group:first-child {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 4px;
+}
+
 .snow-tags-btn {
   flex-shrink: 0;
   padding: 7px 12px;

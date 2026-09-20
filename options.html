@@ -825,12 +825,11 @@
       <button class="tab top" data-tab="grafana">Grafana</button>
     </div>
 
-    <!-- ServiceNow page: Form | Common | Flows -->
+    <!-- ServiceNow page: Form | Flows -->
     <div class="tab-page" id="page-servicenow">
       <div class="subtabs">
         <button class="subtab" data-subtab="form">Form</button>
-        <button class="subtab active" data-subtab="common">Common</button>
-        <button class="subtab" data-subtab="flows">Flows</button>
+        <button class="subtab active" data-subtab="flows">Flows</button>
       </div>
 
       <!-- Form sub-tab -->
@@ -860,26 +859,18 @@ state,State,Resolved,6</pre>
         </div>
       </div>
 
-      <!-- Common sub-tab (single shared document) -->
-      <div class="tab-content" id="tab-common">
+      <!-- Flows sub-tab (single bundle document) -->
+      <div class="tab-content" id="tab-flows">
         <div class="common-toolbar">
-          <span class="common-note">One shared document of reusable steps. ServiceNow <code>flow:</code> items reference them via <code>ref:</code>. Params here (<code>${param0}</code>...) resolve inside these steps' forms.</span>
-          <button class="btn btn-ghost" id="validateCommonDoc">Validate</button>
+          <span class="common-note">One document for all flows. <code>params:</code> declares named variables (<code>${name}</code> — a file param wins over a captured global like <code>${incidentId}</code>). <code>common:</code> holds reusable step templates; <code>groups:</code> bind a dropdown group to a template and list its flows — each flow's <code>items</code> run after the template's steps. The side panel shows every flow under its group.</span>
+          <button class="btn btn-ghost" id="validateBundleDoc">Validate</button>
         </div>
         <div class="pb-card">
           <div class="pb-body">
-            <div class="pb-editor-wrap common-editor-wrap" id="commonEditor"></div>
-            <div class="pb-validation" id="commonValidation"></div>
+            <div class="pb-editor-wrap common-editor-wrap" id="bundleEditor"></div>
+            <div class="pb-validation" id="bundleValidation"></div>
           </div>
         </div>
-      </div>
-
-      <!-- Flows sub-tab -->
-      <div class="tab-content hidden" id="tab-flows">
-        <div class="pb-toolbar">
-          <button class="btn btn-primary" id="addPlaybook">+ Add flow</button>
-        </div>
-        <div class="pb-list" id="playbookList"></div>
       </div>
     </div>
 

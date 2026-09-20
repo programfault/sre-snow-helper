@@ -18,6 +18,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // treating them as structural made the panel rebuild its whole DOM every few
   // seconds — wiping any text the user was typing and closing open dropdowns.
   const structuralKeys = [
+    "sreFlowBundle",
     "srePlaybooks",
     "sreCommonSteps",
     "sreServices",

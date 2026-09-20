@@ -106,11 +106,10 @@ function renderPlaybookCard(pb, common, forms) {
   const cardBody = document.createElement("div");
   cardBody.className = "pb-card-body";
 
-  // Unified Parameters section: playbook-level params + (when the flow refs
-  // any common step) the shared Common Steps params. Every input is tagged
-  // with a source badge. Scope: common forms resolve with common params;
-  // playbook forms resolve with playbook params — "common uses common, each
-  // keeps its own".
+  // Unified Parameters section. Bundle flows carry the file-level `params:`
+  // (named variables) in their materialized yaml and never `ref:` common
+  // steps, so there is exactly one param scope: key = param name — the same
+  // name the ${placeholder} uses in the steps' forms.
   const hasRef = flow.some((st) => st.ref);
   const paramRows = [];
   if (hasRef) {
@@ -122,8 +121,8 @@ function renderPlaybookCard(pb, common, forms) {
       });
     });
   }
-  pbParams.forEach((p, idx) => {
-    paramRows.push({ badge: "playbook", key: `param${idx}`, p });
+  pbParams.forEach((p) => {
+    paramRows.push({ badge: "param", key: p.name || `param-${paramRows.length}`, p });
   });
 
   if (paramRows.length > 0) {
@@ -457,7 +456,18 @@ function buildFilterPickerCard(title, iconSvg, items, placeholderText, initialId
       });
       drop.appendChild(none);
     }
+    // Grouped rendering: bundle flows carry a group label; a non-interactive
+    // header row is painted whenever the group changes. Ungrouped items
+    // (legacy / no group) get no header.
+    let lastGroup = null;
     cands.slice(0, 60).forEach((o) => {
+      if (o.group && o.group !== lastGroup) {
+        const gh = document.createElement("div");
+        gh.className = "snow-tag-opt-group";
+        gh.textContent = o.group;
+        drop.appendChild(gh);
+      }
+      lastGroup = o.group;
       const b = document.createElement("button");
       b.type = "button";
       b.className = "snow-tag-opt";
@@ -526,9 +536,24 @@ function renderFlowsSelectorPanel(playbooks, common, forms) {
     const h = Y.parseHeader(yaml);
     const name = h.name || "(unnamed)";
     const desc = h.desc || "";
-    return { idx: i, text: desc ? name + " — " + desc : name };
+    return {
+      idx: i,
+      group: pb.group || "",
+      text: desc ? name + " — " + desc : name,
+    };
   });
-  list.sort((a, b) => a.text.localeCompare(b.text, undefined, { sensitivity: "base", numeric: true }));
+  // Bundle flows carry their dropdown group; sort grouped items together
+  // (group name, then label). Ungrouped flows stay on top.
+  list.sort((a, b) => {
+    const ga = a.group || "";
+    const gb = b.group || "";
+    if (ga !== gb) {
+      if (!ga) return -1;
+      if (!gb) return 1;
+      return ga.localeCompare(gb, undefined, { sensitivity: "base", numeric: true });
+    }
+    return a.text.localeCompare(b.text, undefined, { sensitivity: "base", numeric: true });
+  });
 
   // Resolve the remembered selection (by pb.id). Nothing selected yet — the
   // body stays hidden, exactly like the Query card — unless a saved id matches.
@@ -1069,11 +1094,14 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
   }
 
   // Collect param values from the card widgets (text <input> / <textarea> /
-  // option radio groups — every widget is tagged with data-param).
+  // option radio groups — every widget is tagged with data-param). Bundle
+  // flows use NAMED variables: the widget key IS the ${name} token, so values
+  // resolve directly. Legacy index keys (paramN) keep working unchanged.
   const pbValues = {};
   pbParams.forEach((p, idx) => {
-    const v = readParamValue(card, "param" + idx);
-    if (v !== null) pbValues["param" + idx] = v;
+    const key = p && p.name ? p.name : "param" + idx;
+    const v = readParamValue(card, key);
+    if (v !== null) pbValues[key] = v;
   });
   const commonValues = {};
   commonParams.forEach((p, idx) => {

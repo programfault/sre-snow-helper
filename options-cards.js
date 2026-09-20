@@ -1,7 +1,8 @@
 /* ---------- Shared CodeMirror hint / editor helpers ---------- */
-// These are used by BOTH the Playbook cards (below) and the Common Steps
-// single-doc editor (options-common.js) — classic scripts share the global
-// scope, so both can call slashHint / mountYamlEditor / renderValidationBox.
+// Used by the Flows bundle editor, the Services editor and the Form tab.
+// Bundle flows are materialized into self-contained playbooks (no `ref:`),
+// so the ref-completion context no longer has a source of step keys — it
+// simply offers nothing instead of reading a removed global.
 
 const HINT_GROUP_TAGS = {
   "common-step": "STEP",
@@ -9,11 +10,10 @@ const HINT_GROUP_TAGS = {
   "form-value": "VALUE",
 };
 
-// Keys of the shared Common Steps document (from the global `commonDoc`).
+// Keys of the shared Common Steps document. The v3 bundle has no `ref:`
+// mechanism — kept as a safe no-op so legacy ref-context hints stay harmless.
 function commonStepKeys() {
-  const yaml = (commonDoc && commonDoc.yaml) || "";
-  const { steps } = Y.parseCommonSteps(yaml);
-  return Object.keys(steps);
+  return [];
 }
 
 // CodeMirror hint source. The yaml-lite analyzer decides the context:
@@ -177,153 +177,3 @@ function renderValidationBox(valEl, report) {
     valEl.appendChild(ul);
   }
 }
-
-/* ---------- Playbook cards ---------- */
-
-const PB_STORE = STORES.playbook;
-
-function renderCards() {
-  const list = document.getElementById(PB_STORE.listId);
-  list.innerHTML = "";
-
-  if (playbooks.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "pb-empty";
-    empty.textContent =
-      'No flows yet. Click "+ Add flow" to create one.';
-    list.appendChild(empty);
-    return;
-  }
-
-  playbooks.forEach((item) => {
-    const card = document.createElement("div");
-    card.className = "pb-card" + (item.collapsed ? " collapsed" : "");
-    card.dataset.id = item.id;
-    card.innerHTML = `
-      <div class="pb-header">
-        <button class="pb-toggle" title="Collapse / expand" aria-label="Collapse / expand">
-          <svg class="chevron" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
-        </button>
-        <div class="pb-meta">
-          <div class="pb-name-display"></div>
-          <div class="pb-desc-display"></div>
-        </div>
-        <div class="pb-actions">
-          <button class="pb-icon-btn validate" title="Validate" aria-label="Validate">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
-          </button>
-          <button class="pb-icon-btn delete" title="Delete" aria-label="Delete">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-          </button>
-        </div>
-      </div>
-      <div class="pb-body">
-        <div class="pb-editor-wrap">
-          <textarea class="pb-yaml" spellcheck="false"></textarea>
-        </div>
-        <div class="pb-validation"></div>
-      </div>
-    `;
-
-    const nameEl = card.querySelector(".pb-name-display");
-    const descEl = card.querySelector(".pb-desc-display");
-    const yamlEl = card.querySelector(".pb-yaml");
-    const toggleEl = card.querySelector(".pb-toggle");
-    const validateBtn = card.querySelector(".pb-icon-btn.validate");
-    const deleteEl = card.querySelector(".pb-icon-btn.delete");
-    const valEl = card.querySelector(".pb-validation");
-
-    function refreshHeader() {
-      const h = Y.parseHeader(item.yaml);
-      if (h.name) {
-        nameEl.textContent = h.name;
-        nameEl.classList.remove("placeholder");
-      } else {
-        nameEl.textContent = "(unnamed)";
-        nameEl.classList.add("placeholder");
-      }
-      if (h.desc) {
-        descEl.textContent = h.desc;
-        descEl.style.display = "";
-      } else {
-        descEl.textContent = "";
-        descEl.style.display = "none";
-      }
-    }
-
-    function doValidate() {
-      card.classList.add("validating");
-      requestAnimationFrame(() => {
-        const commonByName = Y.indexCommonSteps(
-          (commonDoc && commonDoc.yaml) || ""
-        );
-        const formsByName = Y.indexForms(forms);
-        const base = Y.validatePlaybookFlow(
-          item.yaml,
-          commonByName,
-          formsByName
-        );
-        const opt = Y.validateOptionParams(item.yaml, forms);
-        const report = {
-          ok: base.ok && opt.ok,
-          errors: base.errors.concat(opt.errors),
-          warnings: base.warnings.concat(opt.warnings),
-        };
-        renderValidationBox(valEl, report);
-        card.classList.remove("validating");
-      });
-    }
-
-    // Mount CodeMirror on the textarea.
-    yamlEl.value = item.yaml;
-    const cm = mountYamlEditor(yamlEl, PB_STORE.placeholder);
-
-    // Wire editor -> in-memory item, header, storage, validation clear.
-    // `change` fires for every mutation (keystroke, paste, autocomplete, undo).
-    cm.on("change", () => {
-      item.yaml = cm.getValue();
-      refreshHeader();
-      savePlaybooks();
-      // Clear the validation report since the document is now dirty.
-      if (valEl.classList.contains("visible")) {
-        valEl.classList.remove("visible", "ok", "err", "warn");
-        valEl.innerHTML = "";
-      }
-    });
-
-    refreshHeader();
-
-    toggleEl.addEventListener("click", () => {
-      item.collapsed = !item.collapsed;
-      card.classList.toggle("collapsed", item.collapsed);
-      // CodeMirror layout may be stale after re-showing — refresh next frame.
-      if (!item.collapsed) requestAnimationFrame(() => cm.refresh());
-      persistPlaybooks();
-    });
-
-    validateBtn.addEventListener("click", doValidate);
-
-    deleteEl.addEventListener("click", () => {
-      const i = playbooks.findIndex((x) => x.id === item.id);
-      if (i >= 0) playbooks.splice(i, 1);
-      persistPlaybooks();
-      renderCards();
-    });
-
-    list.appendChild(card);
-  });
-}
-
-function addCard() {
-  playbooks.push({ id: uid(), yaml: "", collapsed: false });
-  persistPlaybooks();
-  renderCards();
-  const list = document.getElementById(PB_STORE.listId);
-  const cms = list.querySelectorAll(".CodeMirror");
-  if (cms.length) {
-    const cm = cms[cms.length - 1].CodeMirror;
-    if (cm) cm.focus();
-  }
-}
-
-document.getElementById(PB_STORE.addId).addEventListener("click", addCard);

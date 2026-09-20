@@ -115,6 +115,8 @@ function loadState(cb) {
     [
       "srePlaybooks",
       "sreCommonSteps",
+      "sreFlowBundle",
+      "sreFlowBundleMigrated",
       "sreForms",
       "sreServices",
       "srePanelState",
@@ -133,13 +135,35 @@ function loadState(cb) {
       // ServiceNow label cache (loaded so renders never hit ServiceNow again;
       // only the Labels Refresh button re-fetches).
       snowLabelCache = normalizeLabelCache(data.sreSnowLabels);
+
+      // Flows source of truth: the unified bundle document. Once the one-time
+      // migration marker exists, the bundle is authoritative even when empty
+      // (so an intentionally-emptied bundle never resurrects legacy data).
+      // Before that marker, legacy playbooks + common doc are used directly.
+      // Bundle flows arrive pre-materialized as self-contained playbook yaml
+      // (no `ref:` left) plus a group label for the dropdown.
+      let playbooks = Array.isArray(data.srePlaybooks) ? data.srePlaybooks : [];
+      let commonYaml =
+        data.sreCommonSteps && typeof data.sreCommonSteps.yaml === "string"
+          ? data.sreCommonSteps.yaml
+          : "";
+      if (data.sreFlowBundleMigrated) {
+        playbooks = [];
+        commonYaml = "";
+        const bundleYaml =
+          data.sreFlowBundle && typeof data.sreFlowBundle.yaml === "string"
+            ? data.sreFlowBundle.yaml
+            : "";
+        if (bundleYaml.trim()) {
+          const mat = Y.materializeBundle(Y.parseBundle(bundleYaml));
+          if (mat.flows.length > 0) playbooks = mat.flows;
+        }
+      }
+
       cb({
-        playbooks: Array.isArray(data.srePlaybooks) ? data.srePlaybooks : [],
+        playbooks,
         forms: Array.isArray(data.sreForms) ? data.sreForms : [],
-        commonYaml:
-          data.sreCommonSteps && typeof data.sreCommonSteps.yaml === "string"
-            ? data.sreCommonSteps.yaml
-            : "",
+        commonYaml,
         servicesYaml:
           data.sreServices && typeof data.sreServices.yaml === "string"
             ? data.sreServices.yaml

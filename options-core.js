@@ -1,14 +1,13 @@
 // SRE Helper options script
-// Tabs: ServiceNow (Form | Common | Flows) | Services | Notification (Ringtones | Space Rules)
+// Tabs: ServiceNow (Form | Flows) | Services | Notification (Ringtones | Space Rules)
 //
-// Playbook cards use a *real* CodeMirror 5 YAML editor (vendored locally).
-// The "Common Steps" tab hosts a single shared document (top-level `params:`
-// + a `common_steps:` map) that playbook `flow:` items reference via `ref:`.
+// The "Flows" tab hosts a single bundle document (v3 schema: file-level named
+// `params:`, a `common:` template library and `groups:` binding dropdown groups
+// to templates with nested `flows:`). The side panel materializes each flow
+// into a self-contained playbook; variables are ${name} — file params win over
+// captured page globals.
 //
-// Header (name + desc stacked) for playbooks is derived from the YAML on each
-// change. Per-card Validate runs semantic checks:
-//   Playbook : name + flow refs against Common Steps + forms against the library
-//   Common   : every common_steps form against the Form library
+// Per-doc Validate runs semantic checks against the Form library.
 //
 // The Form tab exposes a CSV-like, column-fixed table (name / label / display /
 // value / type) with click-to-edit rows and a bulk CSV editor (toggle button).
@@ -17,35 +16,11 @@
 
 const Y = SRE_YAML;
 
-const STORES = {
-  playbook: {
-    storageKey: "srePlaybooks",
-    listId: "playbookList",
-    addId: "addPlaybook",
-    placeholder:
-      "# Orchestration flow\n" +
-      "#\n" +
-      "# name: ask-questions\n" +
-      "# desc: Need more details before acting\n" +
-      "# params:\n" +
-      "#   - name: User Name\n" +
-      "#     type: textarea   # optional: multi-line input box\n" +
-      "#   - name: Configuration item\n" +
-      "#     type: option     # optional: radio group fed from the Form library\n" +
-      "# flow:\n" +
-      "#   - name: ack user\n" +
-      "#     ref: ack              # key into the Common Steps doc\n" +
-      "#   - name: custom check\n" +
-      "#     action: true\n" +
-      "#     form:\n" +
-      "#       note: check ${param0}\n",
-  },
-};
-
-// The shared Common Steps single document lives under sreCommonSteps as
-// { id, yaml }. Its editor is hosted on the "common" tab.
-const COMMON_DOC_STORE = {
-  storageKey: "sreCommonSteps",
+// The flows bundle lives under sreFlowBundle as { id, yaml }. Its editor is
+// hosted on the "Flows" tab. Legacy keys (sreCommonSteps / srePlaybooks) are
+// only read once by the migration in options-init.js.
+const BUNDLE_DOC_STORE = {
+  storageKey: "sreFlowBundle",
 };
 
 // The shared Services single document lives under sreServices as { id, yaml }.
@@ -62,8 +37,7 @@ const FORM_FIELDS = [
   { key: "type",    label: "Type"    },
 ];
 
-let playbooks = [];
-let commonDoc = null; // { id, yaml }
+let bundleDoc = null; // { id, yaml } — the unified flows bundle
 let servicesDoc = null; // { id, yaml }
 let forms = []; // Array<{ id, name, label, value, display, type }>
 const saveTimers = {};
@@ -112,33 +86,16 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
   );
 }
-function normalizeCard(c) {
-  if (c && typeof c.yaml === "string") {
-    return { id: c.id || uid(), yaml: c.yaml, collapsed: !!c.collapsed };
-  }
-  let yaml = "";
-  if (c && c.name) yaml += `name: ${c.name}\n`;
-  if (c && c.description) yaml += `desc: ${c.description}\n`;
-  if (c && c.yaml) yaml += c.yaml;
-  return { id: (c && c.id) || uid(), yaml, collapsed: !!(c && c.collapsed) };
-}
 
 /* ---------- Storage helpers ---------- */
-function persistPlaybooks() {
-  chrome.storage.local.set({ [STORES.playbook.storageKey]: playbooks });
-}
-function savePlaybooks() {
-  clearTimeout(saveTimers.playbook);
-  saveTimers.playbook = setTimeout(persistPlaybooks, 400);
-}
-function persistCommonDoc() {
-  if (commonDoc) {
-    chrome.storage.local.set({ [COMMON_DOC_STORE.storageKey]: commonDoc });
+function persistBundleDoc() {
+  if (bundleDoc) {
+    chrome.storage.local.set({ [BUNDLE_DOC_STORE.storageKey]: bundleDoc });
   }
 }
-function saveCommonDoc() {
-  clearTimeout(saveTimers.commonDoc);
-  saveTimers.commonDoc = setTimeout(persistCommonDoc, 400);
+function saveBundleDoc() {
+  clearTimeout(saveTimers.bundleDoc);
+  saveTimers.bundleDoc = setTimeout(persistBundleDoc, 400);
 }
 function persistServicesDoc() {
   if (servicesDoc) {

@@ -6,7 +6,10 @@
 /* ---------- Storage seeding ---------- */
 
 const DEFAULT_STORAGE = {
-  srePlaybooks: [],
+  // Unified flows bundle (v3 schema: params + common templates + groups).
+  // Legacy srePlaybooks/sreCommonSteps keys are migrated into it on first
+  // options-page load and kept as backups.
+  sreFlowBundle: { id: "", yaml: "" },
   sreForms: [],
   // Ringtones library: [{ id, name, durationSec, mime, dataUrl, sizeBytes, createdAt }]
   sreRingtones: [],
