@@ -321,5 +321,108 @@ check("empty bundle -> no flows", emptyMat.flows.length === 0);
 const emptyVal = Y.validateBundle("", formsByName);
 check("empty bundle -> ok with warnings", emptyVal.ok && emptyVal.warnings.length > 0);
 
+/* ---------- 8. empty value = "clear this field" ---------- */
+console.log("[8] empty form values mean CLEAR");
+const emptySample = `params:
+- name: note
+common:
+- name: ClearTemplate
+  steps:
+  - name: clear assigned
+    action: true
+    items:
+      assigned_to:
+      cmdb_ci: ~
+      u_initial_assessment: ""
+      close_notes: \${note}
+groups:
+- group: Resolved
+  common: ClearTemplate
+  flows:
+  - name: Clear assignment
+`;
+const emptyReport = Y.validateBundle(emptySample, formsByName);
+check("empty values pass validation (clear semantics)",
+  emptyReport.ok, JSON.stringify(emptyReport.errors));
+
+// A non-empty value that is NOT a listed candidate must still fail.
+const stillBad = emptySample.replace("      cmdb_ci: ~", "      cmdb_ci: 42");
+const stillBadReport = Y.validateBundle(stillBad, formsByName);
+check("non-empty invalid value still fails",
+  stillBadReport.errors.some((e) => e.includes("cmdb_ci")), stillBadReport.errors.join("; "));
+
+// Round-trip: the materialized playbook must keep the values EMPTY, and the
+// side panel (parseFlow -> parseFormBlock) must read `~` back as "", never as
+// the literal two-character string "~".
+const emptyMat2 = Y.materializeBundle(Y.parseBundle(emptySample));
+const emptyFlow = Y.parseFlow(emptyMat2.flows[0].yaml);
+const clearForm = emptyFlow[0].form;
+check("materialized empty value reads back as \"\" (not \"~\" / false)",
+  clearForm.assigned_to === "" &&
+  clearForm.cmdb_ci === "" &&
+  clearForm.u_initial_assessment === "",
+  JSON.stringify(clearForm));
+check("materialized placeholder value survives",
+  clearForm.close_notes === "${note}", JSON.stringify(clearForm));
+
+// Side-panel resolution: empty stays "" so the PATCH explicitly wipes the field.
+const clearResolved = {};
+Object.entries(clearForm).forEach(([k, v]) => {
+  clearResolved[k] = v == null ? "" : Y.resolvePlaceholders(v, { note: "hi" });
+});
+check("resolved clear payload uses empty string",
+  clearResolved.assigned_to === "" && clearResolved.cmdb_ci === "" &&
+  clearResolved.close_notes === "hi",
+  JSON.stringify(clearResolved));
+
+// YAML null tokens are not booleans / not literal text.
+const nullFlow = Y.parseFlow(
+  "name: t\nflow:\n  - name: s\n    form:\n      a: ~\n      b: null\n      c: NULL\n      d: \"null\"\n"
+);
+check("~ / null / NULL -> \"\", quoted \"null\" -> literal",
+  nullFlow[0].form.a === "" && nullFlow[0].form.b === "" &&
+  nullFlow[0].form.c === "" && nullFlow[0].form.d === "null",
+  JSON.stringify(nullFlow[0] && nullFlow[0].form));
+
+/* ---------- 9. comments mirrors work_notes ---------- */
+console.log("[9] comments special case");
+const mirror = Y.applyCommentsMirror;
+check("empty comments + work_notes -> mirrors",
+  JSON.stringify(mirror({ work_notes: "done", comments: "" })) ===
+  JSON.stringify({ work_notes: "done", comments: "done" }),
+  JSON.stringify(mirror({ work_notes: "done", comments: "" })));
+check("null comments + work_notes -> mirrors",
+  mirror({ work_notes: "done", comments: null }).comments === "done");
+check("empty comments + no work_notes -> key dropped",
+  !("comments" in mirror({ comments: "" })) &&
+  !("comments" in mirror({ work_notes: "", comments: "~" })),
+  JSON.stringify(mirror({ work_notes: "", comments: "~" })));
+check("explicit comments is honoured",
+  mirror({ work_notes: "done", comments: "custom" }).comments === "custom");
+check("absent comments + work_notes -> auto-filled (legacy)",
+  mirror({ work_notes: "done" }).comments === "done");
+// The side-panel order is: resolve empty values to "" first, then mirror.
+const mirrorSample = `common:
+- name: T
+  steps:
+  - name: s
+    items:
+      work_notes: resolved by ops
+      comments: ""
+      assign_to:
+groups:
+- group: G
+  common: T
+  flows:
+  - name: f
+`;
+const mirrorResolved = {};
+Object.entries(Y.parseFlow(Y.materializeBundle(Y.parseBundle(mirrorSample)).flows[0].yaml)[0].form)
+  .forEach(([k, v]) => { mirrorResolved[k] = v == null ? "" : Y.resolvePlaceholders(v, {}); });
+mirror(mirrorResolved);
+check("end-to-end: comments == work_notes, assign_to cleared",
+  mirrorResolved.comments === "resolved by ops" && mirrorResolved.assign_to === "",
+  JSON.stringify(mirrorResolved));
+
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURE(S)");
 process.exit(failures === 0 ? 0 : 1);

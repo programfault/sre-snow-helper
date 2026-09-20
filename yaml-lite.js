@@ -152,6 +152,17 @@
   // `indentLevel` is a hint for the expected indentation of the `form:` header;
   // 0 = top-level, 2 = inside a step. Leading whitespace is tolerated.
   // Returns {} when no form block.
+  // A YAML null token as a raw (still-quoted-at-source) scalar: `~`, `null`
+  // (any case) or nothing at all. Quoted forms (`"~"`, "null") are NOT null —
+  // the author asked for the literal text.
+  function isNullScalarToken(raw) {
+    const t = String(raw == null ? "" : raw).trim();
+    if (t === "") return false; // empty stays empty — already the right value
+    if (t === "~") return true;
+    if (t[0] === '"' || t[0] === "'") return false;
+    return t.toLowerCase() === "null";
+  }
+
   function parseFormBlock(yaml, indentLevel) {
     const form = {};
     if (!yaml) return form;
@@ -226,7 +237,11 @@
         }
         form[key] = value;
       } else {
-        form[key] = stripQuotes(rawVal);
+        // A YAML null token (`~` / `null`) means "no value" — an intentionally
+        // EMPTY field, i.e. "clear this field on ServiceNow". `~` is exactly
+        // what materializeBundle writes for an empty value, so it must read
+        // back as "" and never as the literal two-character string "~".
+        form[key] = isNullScalarToken(rawVal) ? "" : stripQuotes(rawVal);
       }
     }
     return form;
@@ -552,10 +567,22 @@
     return byName;
   }
 
+  // An empty YAML value means "clear this field" — written as `key:` (parsed
+  // to null), `key: ~` (YAML null token) or `key: ""`. It is always valid,
+  // regardless of the Form library's fixed candidate values, because the
+  // author's intent is the empty string, not a listed option.
+  function isEmptyFormValue(v) {
+    if (v === null || v === undefined) return true;
+    if (typeof v === "string" && v.trim() === "") return true;
+    return false;
+  }
+
   // Validate a single form map ({field: value}) against the form definitions.
   // A field whose rows are all type "string" accepts any YAML value; as soon
   // as any row is typed "number"/"sysid", the YAML value must equal one of
   // those rows' values.
+  // An EMPTY value (null / "" / whitespace) is always allowed and meaningful:
+  // it explicitly clears the field on ServiceNow (`assign_to:` / `assign_to: ""`).
   // Returns { ok, errors: string[] }
   function validateForm(formMap, formsByName) {
     const errors = [];
@@ -565,6 +592,7 @@
         errors.push(`form key "${key}" is not defined in the Form library`);
         continue;
       }
+      if (isEmptyFormValue(val)) continue; // explicit "clear this field"
       const fixedValues = defs
         .filter((d) => d.type && d.type !== "string")
         .map((d) => String(d.value ?? ""));
@@ -692,6 +720,12 @@
     }
     if (s.indexOf("${") !== -1) return s;
     const low = s.toLowerCase();
+    // YAML null tokens must be resolved BEFORE the boolean tokens below
+    // (FALSE_TOKENS historically contains "null"/"~" for the `action:` parser).
+    // Without this, `assign_to: ~` — the form an empty value takes after
+    // materialization — turned into boolean false and was PATCHed to
+    // ServiceNow as `false` instead of clearing the field.
+    if (s === "~" || low === "null") return null;
     if (TRUE_TOKENS.has(low)) return true;
     if (FALSE_TOKENS.has(low)) return false;
     if (/^[-+]?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(s)) {
@@ -1610,6 +1644,42 @@
     return { flows, issues };
   }
 
+  // A value that stands for "no value": null / undefined, blank, or a YAML null
+  // token (`~` / `null`) that reached us unparsed. Used by the `comments` rule.
+  function isNoValue(v) {
+    if (v === null || v === undefined) return true;
+    if (typeof v !== "string") return false;
+    const t = v.trim();
+    if (t === "") return true;
+    return t === "~" || t.toLowerCase() === "null";
+  }
+
+  // ---------- `comments` special case ----------
+  //
+  // comments and work_notes are virtually always identical on ServiceNow, so an
+  // EMPTY `comments` is a marker meaning "same as work_notes" — the long text is
+  // authored once, in work_notes (see flows-schema-v3.md §3):
+  //   • comments empty + work_notes present  -> comments = work_notes
+  //   • comments empty + no work_notes       -> the key is DROPPED; an empty
+  //     marker must never wipe the incident's comments field
+  //   • comments non-empty                   -> honoured as authored
+  //   • comments absent + work_notes present -> mirrored (legacy docs)
+  // Mutates and returns `form`.
+  function applyCommentsMirror(form) {
+    if (!form || typeof form !== "object") return form;
+    const wn = form.work_notes;
+    const wnText = wn == null ? "" : String(wn);
+    if (Object.prototype.hasOwnProperty.call(form, "comments")) {
+      if (isNoValue(form.comments)) {
+        if (wnText.trim() !== "") form.comments = wn;
+        else delete form.comments;
+      }
+      return form;
+    }
+    if (wnText.trim() !== "") form.comments = wn;
+    return form;
+  }
+
   // ---- validation ----
 
   // Validate the whole bundle: structure, references, uniqueness, form values
@@ -1640,6 +1710,7 @@
         if (typeof val === "string" && extractPlaceholderNames(val).length > 0) {
           continue; // resolved at run time — nothing to compare yet
         }
+        if (isEmptyFormValue(val)) continue; // explicit "clear this field"
         const fixedValues = defs
           .filter((d) => d.type && d.type !== "string")
           .map((d) => String(d.value ?? ""));
@@ -1967,6 +2038,7 @@
     parseFlow,
     extractPlaceholderNames,
     resolvePlaceholders,
+    applyCommentsMirror,
     indexForms,
     validateForm,
     validateCommonStepsDoc,

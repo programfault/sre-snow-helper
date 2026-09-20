@@ -120,6 +120,18 @@ groups:
 
 - **稳定 id**：`hash(group名 + "/" + flow名)`；校验要求组内 flow 名唯一、组引用的
   common 模板必须存在、模板内步骤名唯一。
+- **空值 = 清空字段（v3.3）**：`field:` / `field: ~` / `field: ""` 三种写法等价，语义都是
+  "把该字段置空"（如 `assign_to:` 清空指派人）。校验对空值一律放行——即使该字段在 Forms
+  库里只有固定候选值（`type: number`/`sysid`）也不报错；执行时 PATCH 发送显式空字符串。
+  注意：带引号的 `"~"` / `"null"` 是**字面量文本**，不是空值。空值经物化写出为 `~`，
+  读回时必须还原成 `""`（否则会把两字符的 `~` 发给 ServiceNow）。【已实现】
+- **`comments` 是特例**：comments 与 work_notes 实际总是同文，所以空的 `comments:`
+  （`comments: ""` / `~` / 什么都不写）是"与 work_notes 相同"的标记，长文本只写一遍：
+  - 空 comments + 有 work_notes → comments 取 work_notes 的值；
+  - 空 comments + 无 work_notes → **删除该字段**：空标记只是"跟随 work_notes"，绝不等于
+    "清空 incident 的 comments"；
+  - comments 非空 → 按作者写的值原样发送（不再被 work_notes 无条件覆盖）；
+  - comments 整行不写 + 有 work_notes → 仍自动补齐（兼容旧文档）。【已实现】
 
 ## 4. 功能无损对照
 

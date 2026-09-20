@@ -1122,16 +1122,11 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
   // common step's value; else false). A payload still containing ${…} after
   // resolution is an error — it must never reach ServiceNow literally.
   const commonSteps = (common && common.steps) || {};
-  // Practical shortcut: comments and work_notes are virtually always kept in
-  // sync, so whenever a payload sends work_notes we mirror the same value into
-  // comments automatically. Authors only define work_notes (and its
-  // placeholder) once — no separate comments field/handling is needed.
-  const mirrorComments = (form) => {
-    if (form && typeof form.work_notes === "string" && form.work_notes.length > 0) {
-      form.comments = form.work_notes;
-    }
-    return form;
-  };
+  // `comments` is a special field: an EMPTY value is a marker meaning "same as
+  // work_notes" (the long text is authored once) — see Y.applyCommentsMirror in
+  // yaml-lite.js for the full rule set. Kept as a thin alias so every payload
+  // path below goes through the single shared implementation.
+  const mirrorComments = (form) => Y.applyCommentsMirror(form);
   const finishUnit = (idx, displayName, refName, formMap, actionVal) => {
     const leftover = collectUnresolved([formMap]);
     if (leftover.length > 0) {
@@ -1150,7 +1145,11 @@ async function executePlaybook(card, pb, flow, pbParams, commonParams, common, o
     const resolve = (formMap, values) => {
       const resolved = {};
       for (const [k, v] of Object.entries(formMap)) {
-        resolved[k] = Y.resolvePlaceholders(v, values);
+        // An empty YAML value (`assign_to:` / `assign_to: ~` / `assign_to: ""`)
+        // means "clear this field" — normalise it to an explicit empty string
+        // so the PATCH body wipes the field instead of dropping the key or
+        // sending a null/undefined placeholder.
+        resolved[k] = v == null ? "" : Y.resolvePlaceholders(v, values);
       }
       return resolved;
     };
