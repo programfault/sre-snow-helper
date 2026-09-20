@@ -143,7 +143,7 @@ const badSample = sample
 const badReport = Y.validateBundle(badSample, formsByName);
 check("missing template reported", badReport.errors.some((e) => e.includes("NoSuchTemplate")), badReport.errors.join("; "));
 check("bad form value reported", badReport.errors.some((e) => e.includes('must be one of')), badReport.errors.join("; "));
-check("typo variable warned", badReport.warnings.some((w) => w.includes("buisness_service")), badReport.warnings.join("; "));
+check("typo variable is an ERROR (strict mode)", badReport.errors.some((e) => e.includes("buisness_service")), badReport.errors.join("; "));
 
 /* ---------- 3. legacy migration ---------- */
 console.log("[3] migrateLegacy");

@@ -1634,16 +1634,18 @@
         const items = f.items || {};
         const fv = validateFormVars(items, formsByName, declaredVars);
         if (!fv.ok) errors.push(...fv.errors.map((e) => `${gwhere} flow "${f.name || fi + 1}": ${e}`));
-        // variable references
+        // variable references — strict mode (user decision): every ${name}
+        // must be a declared file param or a captured page global, otherwise
+        // validation fails.
         Object.entries(items).forEach(([k, v]) => {
           if (typeof v !== "string") return;
           extractPlaceholderNames(v).forEach((n) => {
             if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) {
               warnings.push(`${fwhere}: variable "\${${n}}" — prefer [A-Za-z0-9_] names`);
             }
-            if (!paramNames.has(n) && gvars.indexOf(n) === -1) {
-              warnings.push(
-                `${fwhere}: "\${${n}}" is not a file param or captured global — it will be asked as a free-text input`
+            if (!declaredVars.has(n)) {
+              errors.push(
+                `${fwhere}: unknown variable "\${${n}}" — declare it in params: or use a captured global (${gvars.join(", ")})`
               );
             }
           });
@@ -1651,15 +1653,15 @@
       });
     });
 
-    // template step variables (they resolve against file params + globals too)
+    // template step variables (strict mode: must be declared params or globals)
     parsed.commons.forEach((c) => {
       c.steps.forEach((s) => {
         Object.entries(s.items || {}).forEach(([k, v]) => {
           if (typeof v !== "string") return;
           extractPlaceholderNames(v).forEach((n) => {
-            if (!paramNames.has(n) && gvars.indexOf(n) === -1) {
-              warnings.push(
-                `common "${c.name}" step "${s.name || ""}": "\${${n}}" is not a file param or captured global`
+            if (!declaredVars.has(n)) {
+              errors.push(
+                `common "${c.name}" step "${s.name || ""}": unknown variable "\${${n}}" — declare it in params: or use a captured global`
               );
             }
           });
