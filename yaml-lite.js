@@ -1164,11 +1164,30 @@
 
   // Build autocomplete candidates for the given context.
   // ctx.kind === "ref"  => only common step keys (after "ref: ").
+  // ctx.kind === "var"  => declared file params + captured globals, for the
+  //                        `${` context; the snippet includes the closing `}`
+  //                        because the insertion point sits after `${`.
   // ctx.kind === "slash" => two-level form completions (see below).
   // Each item is { label, snippet, group, hint }.
   function buildCompletions(ctx) {
     const items = [];
     const c = ctx || {};
+    if (c.kind === "var") {
+      const params = Array.isArray(c.params) ? c.params : [];
+      const globals = Array.isArray(c.globals) ? c.globals : [];
+      const seen = new Set();
+      params.forEach((p) => {
+        if (!p || seen.has(p)) return;
+        seen.add(p);
+        items.push({ label: p, snippet: p + "}", group: "var-param", hint: "param" });
+      });
+      globals.forEach((g) => {
+        if (!g || seen.has(g)) return;
+        seen.add(g);
+        items.push({ label: g, snippet: g + "}", group: "var-global", hint: "global" });
+      });
+      return items;
+    }
     if (c.kind === "ref") {
       const keys = Array.isArray(c.commonSteps) ? c.commonSteps : [];
       keys.forEach((k) => {
@@ -1274,6 +1293,17 @@
         prefix: linePrefix.slice(sp),
         kind: "ref",
       };
+    }
+
+    // --- ${variable} completion context ---
+    // The caret sits inside an unclosed `${…` — the text between the last
+    // `${` and the caret must be a plain (possibly empty) name fragment.
+    const dollarIdx = upToCursor.lastIndexOf("${");
+    if (dollarIdx >= 0 && upToCursor.indexOf("}", dollarIdx) < 0) {
+      const partial = upToCursor.slice(dollarIdx + 2);
+      if (/^[\w-]*$/.test(partial)) {
+        return { triggerStart: dollarIdx + 2, prefix: partial, kind: "var" };
+      }
     }
 
     // --- slash completion context ---
@@ -1425,35 +1455,51 @@
 
   // ---- parsing ----
 
-  // Parse the bundle document. Returns { version, params, commons, groups,
-  // rawErrors } where commons = [{name, steps:[{name, action, items}]}] and
-  // groups = [{group, common, flows:[{name, desc, items}]}].
+  // Parse the bundle document. Returns { version, params, steps, commons,
+  // groups, rawErrors } where:
+  //   steps   = shared step library [{name, action, items}]
+  //   commons = [{name, steps:[{ref? | name, action, items}]}] — a step entry
+  //             may be a plain `ref:` into the library
+  //   groups  = [{group, common, flows:[{name, desc, items, steps}]}] — a flow
+  //             carries either a single `items` map (shorthand) or a `steps`
+  //             list of {ref? | name, action, items} entries
   function parseBundle(yaml) {
     const rawErrors = [];
     let data;
     try {
       data = parseNestedYaml(yaml || "");
     } catch (e) {
-      return { version: 3, params: [], commons: [], groups: [], rawErrors: [`unparseable YAML: ${e.message}`] };
+      return { version: 3, params: [], steps: [], commons: [], groups: [], rawErrors: [`unparseable YAML: ${e.message}`] };
     }
     if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return { version: 3, params: [], commons: [], groups: [], rawErrors: ["empty or invalid bundle document"] };
+      return { version: 3, params: [], steps: [], commons: [], groups: [], rawErrors: ["empty or invalid bundle document"] };
     }
     const str = (v) => (v == null ? "" : stripQuotes(String(v)));
+    const normItems = (v) =>
+      v && typeof v === "object" && !Array.isArray(v) ? v : {};
+    const normStepEntry = (s) => {
+      const e = {
+        name: str(s.name),
+        action: parseActionToken(s.action) === true,
+        items: normItems(s.items),
+      };
+      const ref = str(s.ref);
+      if (ref) e.ref = ref;
+      return e;
+    };
     const params = (Array.isArray(data.params) ? data.params : [])
       .filter((p) => p && typeof p === "object")
       .map((p) => ({ name: str(p.name), type: str(p.type) || "string" }));
+    const stepsLib = (Array.isArray(data.steps) ? data.steps : [])
+      .filter((s) => s && typeof s === "object")
+      .map(normStepEntry);
     const commons = (Array.isArray(data.common) ? data.common : [])
       .filter((c) => c && typeof c === "object")
       .map((c) => ({
         name: str(c.name),
         steps: (Array.isArray(c.steps) ? c.steps : [])
           .filter((s) => s && typeof s === "object")
-          .map((s) => ({
-            name: str(s.name),
-            action: parseActionToken(s.action) === true,
-            items: s.items && typeof s.items === "object" && !Array.isArray(s.items) ? s.items : {},
-          })),
+          .map(normStepEntry),
       }));
     const groups = (Array.isArray(data.groups) ? data.groups : [])
       .filter((g) => g && typeof g === "object")
@@ -1469,18 +1515,36 @@
               f.items && typeof f.items === "object" && !Array.isArray(f.items)
                 ? f.items
                 : null,
+            steps: (Array.isArray(f.steps) ? f.steps : [])
+              .filter((s) => s && typeof s === "object")
+              .map(normStepEntry),
           })),
       }));
-    return { version: data.version, params, commons, groups, rawErrors };
+    return { version: data.version, params, steps: stepsLib, commons, groups, rawErrors };
   }
 
   // ---- materialization ----
 
-  // Build one flow's self-contained playbook YAML: header + file params +
-  // expanded steps (template steps first, the flow's own items appended).
+  // Expand one step entry: a `ref:` pulls the library step (pure inheritance —
+  // name/action/items all come from the library); anything else passes through.
+  // Returns null (with an issue appended) when the ref target is missing.
+  function expandStepEntry(entry, libByName, issues, where) {
+    if (entry.ref) {
+      const ls = libByName.get(entry.ref);
+      if (!ls) {
+        issues.push(`${where}: ref "${entry.ref}" not found in steps library`);
+        return null;
+      }
+      return { name: ls.name, action: ls.action, items: ls.items };
+    }
+    return entry;
+  }
+
+  // Build one flow's self-contained playbook YAML from fully-expanded steps.
   // Lists are emitted with the legacy two-space indented style so the
   // line-based parseParams/parseFlow readers accept them unchanged.
-  function bundleFlowYaml(flow, tpl, fileParams) {
+  function bundleFlowYaml(flow, tpl, fileParams, libByName, issues) {
+    const where = `flow "${flow.name || "?"}"`;
     const lines = [];
     lines.push(`name: ${yamlScalar(flow.name)}`);
     if (flow.desc) lines.push(`desc: ${yamlScalar(flow.desc)}`);
@@ -1491,8 +1555,21 @@
         if (p.type && p.type !== "string") lines.push(`    type: ${yamlScalar(p.type)}`);
       });
     }
-    const steps = tpl ? tpl.steps.slice() : [];
-    if (flow.items) {
+    // Effective steps: template (refs expanded) + the flow's own contribution.
+    // Own contribution = `steps:` list (each entry expanded) when present,
+    // else the single `items` shorthand as one final step. Using both is a
+    // validation error; here `steps` wins.
+    let steps = [];
+    (tpl ? tpl.steps : []).forEach((s) => {
+      const ex = expandStepEntry(s, libByName, issues, `template "${tpl.name}"`);
+      if (ex) steps.push(ex);
+    });
+    if (flow.steps && flow.steps.length > 0) {
+      flow.steps.forEach((s, i) => {
+        const ex = expandStepEntry(s, libByName, issues, `${where} step ${i + 1}`);
+        if (ex) steps.push(ex);
+      });
+    } else if (flow.items) {
       steps.push({ name: flow.name, action: false, items: flow.items });
     }
     if (steps.length > 0) {
@@ -1514,6 +1591,7 @@
   // { flows: [{id, group, yaml}], issues: string[] }.
   function materializeBundle(parsed) {
     const tplByName = new Map((parsed.commons || []).map((c) => [c.name, c]));
+    const libByName = new Map((parsed.steps || []).map((s) => [s.name, s]));
     const flows = [];
     const issues = [];
     (parsed.groups || []).forEach((g) => {
@@ -1525,7 +1603,7 @@
         flows.push({
           id: "fb-" + hashId(g.group + "/" + f.name),
           group: g.group,
-          yaml: bundleFlowYaml(f, tpl, parsed.params),
+          yaml: bundleFlowYaml(f, tpl, parsed.params, libByName, issues),
         });
       });
     });
@@ -1593,6 +1671,55 @@
       }
     });
 
+    // A step entry is either {ref} (library lookup) or an inline step.
+    const checkStepEntry = (s, where) => {
+      if (s.ref) {
+        if (!libNames.has(s.ref)) {
+          errors.push(`${where}: ref "${s.ref}" not found in steps library`);
+        }
+        return;
+      }
+      if (!s.name) errors.push(`${where}: missing name`);
+      const fv = validateFormVars(s.items || {}, formsByName, declaredVars);
+      if (!fv.ok) errors.push(...fv.errors.map((e) => `${where}: ${e}`));
+      checkStepVars(s.items, where);
+    };
+    const checkStepVars = (items, where) => {
+      // strict mode (user decision): every ${name} must be a declared file
+      // param or a captured page global, otherwise validation fails.
+      Object.entries(items || {}).forEach(([k, v]) => {
+        if (typeof v !== "string") return;
+        extractPlaceholderNames(v).forEach((n) => {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) {
+            warnings.push(`${where}: variable "\${${n}}" — prefer [A-Za-z0-9_] names`);
+          }
+          if (!declaredVars.has(n)) {
+            errors.push(
+              `${where}: unknown variable "\${${n}}" — declare it in params: or use a captured global (${gvars.join(", ")})`
+            );
+          }
+        });
+      });
+    };
+
+    // Shared step library (optional). Refs elsewhere point ONLY here.
+    const libNames = new Set();
+    parsed.steps.forEach((s, i) => {
+      const where = s.name ? `steps "${s.name}"` : `steps[${i + 1}]`;
+      if (s.ref) {
+        errors.push(`${where}: a library step cannot itself be a ref`);
+      }
+      if (!s.name) {
+        errors.push(`${where}: missing name`);
+      } else if (libNames.has(s.name)) {
+        errors.push(`steps: duplicate step name "${s.name}"`);
+      }
+      libNames.add(s.name);
+      const fv = validateFormVars(s.items || {}, formsByName, declaredVars);
+      if (!fv.ok) errors.push(...fv.errors.map((e) => `${where}: ${e}`));
+      checkStepVars(s.items, `steps "${s.name || i + 1}"`);
+    });
+
     // templates
     const tplNames = new Set();
     parsed.commons.forEach((c, i) => {
@@ -1606,11 +1733,15 @@
       const stepNames = new Set();
       if (c.steps.length === 0) warnings.push(`${where}: template has no steps`);
       c.steps.forEach((s, si) => {
-        if (!s.name) errors.push(`${where} step ${si + 1}: missing name`);
-        else if (stepNames.has(s.name)) errors.push(`${where}: duplicate step name "${s.name}"`);
-        stepNames.add(s.name);
-        const fv = validateFormVars(s.items || {}, formsByName, declaredVars);
-        if (!fv.ok) errors.push(...fv.errors.map((e) => `${where} step "${s.name || si + 1}": ${e}`));
+        const swhere = `${where} step "${s.name || si + 1}"`;
+        if (!s.ref) {
+          if (!s.name) errors.push(`${where} step ${si + 1}: missing name`);
+          else if (stepNames.has(s.name)) errors.push(`${where}: duplicate step name "${s.name}"`);
+          stepNames.add(s.name);
+        } else {
+          stepNames.add(s.ref);
+        }
+        checkStepEntry(s, swhere);
       });
     });
 
@@ -1631,41 +1762,16 @@
         if (!f.name) errors.push(`${gwhere} flow ${fi + 1}: missing name`);
         else if (flowNames.has(f.name)) errors.push(`${gwhere}: duplicate flow name "${f.name}"`);
         flowNames.add(f.name);
-        const items = f.items || {};
-        const fv = validateFormVars(items, formsByName, declaredVars);
-        if (!fv.ok) errors.push(...fv.errors.map((e) => `${gwhere} flow "${f.name || fi + 1}": ${e}`));
-        // variable references — strict mode (user decision): every ${name}
-        // must be a declared file param or a captured page global, otherwise
-        // validation fails.
-        Object.entries(items).forEach(([k, v]) => {
-          if (typeof v !== "string") return;
-          extractPlaceholderNames(v).forEach((n) => {
-            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) {
-              warnings.push(`${fwhere}: variable "\${${n}}" — prefer [A-Za-z0-9_] names`);
-            }
-            if (!declaredVars.has(n)) {
-              errors.push(
-                `${fwhere}: unknown variable "\${${n}}" — declare it in params: or use a captured global (${gvars.join(", ")})`
-              );
-            }
-          });
-        });
-      });
-    });
-
-    // template step variables (strict mode: must be declared params or globals)
-    parsed.commons.forEach((c) => {
-      c.steps.forEach((s) => {
-        Object.entries(s.items || {}).forEach(([k, v]) => {
-          if (typeof v !== "string") return;
-          extractPlaceholderNames(v).forEach((n) => {
-            if (!declaredVars.has(n)) {
-              errors.push(
-                `common "${c.name}" step "${s.name || ""}": unknown variable "\${${n}}" — declare it in params: or use a captured global`
-              );
-            }
-          });
-        });
+        if (f.items && f.steps.length > 0) {
+          errors.push(
+            `${fwhere}: use either \`items:\` (single own step) or \`steps:\` (multiple own steps), not both`
+          );
+        }
+        f.steps.forEach((s, si) => checkStepEntry(s, `${fwhere} step ${si + 1}`));
+        const ownItems = f.items || {};
+        const fv = validateFormVars(ownItems, formsByName, declaredVars);
+        if (!fv.ok) errors.push(...fv.errors.map((e) => `${fwhere}: ${e}`));
+        checkStepVars(ownItems, fwhere);
       });
     });
 
@@ -1762,7 +1868,7 @@
       groups.push({
         group: gName,
         common: tplName,
-        flows: [{ name: header.name || gName, desc: header.desc || "", items: null }],
+        flows: [{ name: header.name || gName, desc: header.desc || "", items: null, steps: [] }],
       });
     });
 
@@ -1773,6 +1879,20 @@
 
   // Serialize a parsed bundle structure back to YAML text (used by migration
   // and handy for round-tripping).
+  function serializeStepEntry(s, pad) {
+    if (s.ref) {
+      return `${pad}- ref: ${yamlScalar(s.ref)}`;
+    }
+    const lines = [`${pad}- name: ${yamlScalar(s.name || "")}`];
+    if (s.action === true) lines.push(`${pad}  action: true`);
+    const fm = serializeFormMap(s.items, pad.length + 4);
+    if (fm) {
+      lines.push(`${pad}  items:`);
+      lines.push(fm);
+    }
+    return lines.join("\n");
+  }
+
   function serializeBundle(parsed) {
     const lines = [];
     lines.push("version: 3");
@@ -1786,6 +1906,14 @@
       });
       lines.push("");
     }
+    if (parsed.steps && parsed.steps.length) {
+      lines.push("# Shared step library: reusable single steps, referenced via `ref:`");
+      lines.push("steps:");
+      parsed.steps.forEach((s) => {
+        lines.push(serializeStepEntry(s, "  "));
+      });
+      lines.push("");
+    }
     if (parsed.commons && parsed.commons.length) {
       lines.push("# Template library: each entry is a reusable ordered step sequence");
       lines.push("common:");
@@ -1793,13 +1921,7 @@
         lines.push(`  - name: ${yamlScalar(c.name)}`);
         lines.push("    steps:");
         (c.steps || []).forEach((s) => {
-          lines.push(`      - name: ${yamlScalar(s.name || "")}`);
-          if (s.action === true) lines.push("        action: true");
-          const fm = serializeFormMap(s.items, 10);
-          if (fm) {
-            lines.push("        items:");
-            lines.push(fm);
-          }
+          lines.push(serializeStepEntry(s, "      "));
         });
       });
       lines.push("");
@@ -1813,10 +1935,17 @@
       (g.flows || []).forEach((f) => {
         lines.push(`      - name: ${yamlScalar(f.name)}`);
         if (f.desc) lines.push(`        desc: ${yamlScalar(f.desc)}`);
-        const fm = serializeFormMap(f.items, 10);
-        if (fm) {
-          lines.push("        items:");
-          lines.push(fm);
+        if (f.steps && f.steps.length > 0) {
+          lines.push("        steps:");
+          f.steps.forEach((s) => {
+            lines.push(serializeStepEntry(s, "          "));
+          });
+        } else {
+          const fm = serializeFormMap(f.items, 10);
+          if (fm) {
+            lines.push("        items:");
+            lines.push(fm);
+          }
         }
       });
     });

@@ -8,12 +8,32 @@ const HINT_GROUP_TAGS = {
   "common-step": "STEP",
   form: "FORM",
   "form-value": "VALUE",
+  "var-param": "PARAM",
+  "var-global": "GLOBAL",
 };
 
 // Keys of the shared Common Steps document. The v3 bundle has no `ref:`
 // mechanism — kept as a safe no-op so legacy ref-context hints stay harmless.
 function commonStepKeys() {
   return [];
+}
+
+// Variable-name candidates for the `${` completion context: the bundle's
+// declared file params first, then the captured page globals.
+function editorVarParams() {
+  try {
+    const yaml = (typeof bundleDoc !== "undefined" && bundleDoc && bundleDoc.yaml) || "";
+    if (!yaml) return [];
+    return Y.parseBundle(yaml)
+      .params.map((p) => p.name)
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function editorVarGlobals() {
+  return window.SRE_ENV ? SRE_ENV.FIELDS.map((f) => f.gvar) : Y.GLOBAL_GVARS;
 }
 
 // CodeMirror hint source. The yaml-lite analyzer decides the context:
@@ -32,7 +52,13 @@ function slashHint(cm) {
   const all =
     ctx.kind === "ref"
       ? Y.buildCompletions({ kind: "ref", commonSteps: commonStepKeys() })
-      : Y.buildCompletions({ ...ctx, forms });
+      : ctx.kind === "var"
+        ? Y.buildCompletions({
+            kind: "var",
+            params: editorVarParams(),
+            globals: editorVarGlobals(),
+          })
+        : Y.buildCompletions({ ...ctx, forms });
   const items = Y.filterCompletions(all, ctx.prefix, ctx.kind);
   if (items.length === 0) return;
 
@@ -130,7 +156,7 @@ function mountYamlEditor(textarea, placeholderText) {
   }
   cm.on("keyup", (cm2, evt) => {
     const k = evt.key;
-    if (k === "/" || k === " " || /^[A-Za-z0-9_-]$/.test(k)) {
+    if (k === "/" || k === "{" || k === " " || /^[A-Za-z0-9_-]$/.test(k)) {
       triggerHintIfAppropriate();
     }
   });

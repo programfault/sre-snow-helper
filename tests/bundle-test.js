@@ -225,6 +225,95 @@ check("round-trip params equal", JSON.stringify(round.params) === JSON.stringify
 check("round-trip commons equal", JSON.stringify(round.commons) === JSON.stringify(migrated.commons));
 check("round-trip groups equal", JSON.stringify(round.groups) === JSON.stringify(migrated.groups));
 
+/* ---------- 6. steps library, refs, multi-step flows ---------- */
+console.log("[6] steps library + refs + flow steps");
+const libSample = `
+version: 3
+
+params:
+- name: business_service
+  type: option
+
+steps:
+- name: ack
+  action: true
+  items:
+    state: 2
+    work_notes: ack
+- name: resolve
+  action: true
+  items:
+    state: 6
+
+common:
+- name: T
+  steps:
+  - ref: ack
+  - ref: resolve
+
+groups:
+- group: G
+  common: T
+  flows:
+  - name: F1
+    items:
+      work_notes: done
+      business_service: \${business_service}
+  - name: F2
+    steps:
+    - ref: resolve
+    - name: note
+      items:
+        work_notes: note text
+`;
+const libParsed = Y.parseBundle(libSample);
+check("library parsed", libParsed.steps.length === 2 && libParsed.steps[0].name === "ack");
+check("template ref entries kept", libParsed.commons[0].steps[0].ref === "ack");
+const libMat = Y.materializeBundle(libParsed);
+check("library materializes with no issues", libMat.issues.length === 0, libMat.issues.join("; "));
+const f1Flow = Y.parseFlow(libMat.flows[0].yaml);
+check("refs expanded in template (2) + own items (1)", f1Flow.length === 3 && f1Flow.every((s) => !s.ref));
+check("ref step action inherited", f1Flow[0].action === true && f1Flow[2].action !== true);
+const f2Flow = Y.parseFlow(libMat.flows[1].yaml);
+check("flow steps list expanded after template",
+  f2Flow.length === 4 &&
+  f2Flow[0].name === "ack" && f2Flow[1].name === "resolve" &&
+  f2Flow[2].name === "resolve" && f2Flow[3].name === "note",
+  JSON.stringify(f2Flow.map((s) => s.name)));
+const libReport = Y.validateBundle(libSample, formsByName);
+check("library bundle validates", libReport.ok, JSON.stringify(libReport.errors));
+
+const missingRef = libSample.replace("- ref: ack", "- ref: nope");
+check("missing library ref is an error",
+  Y.validateBundle(missingRef, formsByName).errors.some((e) => e.includes('"nope"')));
+const bothSample = libSample.replace(
+  "    steps:\n    - ref: resolve",
+  "    items:\n      work_notes: x\n    steps:\n    - ref: resolve"
+);
+check("items + steps conflict is an error",
+  Y.validateBundle(bothSample, formsByName).errors.some((e) => e.includes("not both")));
+
+/* ---------- 7. ${var} autocomplete context ---------- */
+console.log("[7] ${var} completion context");
+const varLine = "      business_service: ${b";
+const varCtx = Y.analyzeContext(varLine, varLine.length);
+check("var context detected", varCtx && varCtx.kind === "var" && varCtx.prefix === "b", JSON.stringify(varCtx));
+const varCtxEmpty = Y.analyzeContext("x: ${", "x: ${".length);
+check("empty var context", varCtxEmpty && varCtxEmpty.kind === "var" && varCtxEmpty.prefix === "");
+const varCtxClosed = Y.analyzeContext("x: ${b} rest", 13);
+check("closed brace -> no var context", varCtxClosed === null || varCtxClosed.kind !== "var");
+const varItems = Y.buildCompletions({
+  kind: "var",
+  params: ["business_service"],
+  globals: ["incidentId", "business_service"],
+});
+check("var completions: params first, globals deduped",
+  varItems.length === 2 &&
+  varItems[0].label === "business_service" && varItems[0].group === "var-param" &&
+  varItems[1].label === "incidentId" && varItems[1].group === "var-global",
+  JSON.stringify(varItems));
+check("var snippet includes closing brace", varItems[0].snippet === "business_service}");
+
 /* ---------- 5. empty / degenerate docs ---------- */
 console.log("[5] degenerate inputs");
 const emptyMat = Y.materializeBundle(Y.parseBundle(""));

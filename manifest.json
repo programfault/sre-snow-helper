@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SRE Helper",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "SRE Helper: a persistent right-side panel that stays open across tab switches and page navigation.",
   "permissions": ["sidePanel", "storage", "tabs", "offscreen", "cookies", "clipboardRead"],
   "host_permissions": [
