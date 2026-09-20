@@ -110,10 +110,47 @@ function renderPlaybookCard(pb, common, forms) {
   // (named variables) in their materialized yaml and never `ref:` common
   // steps, so there is exactly one param scope: key = param name — the same
   // name the ${placeholder} uses in the steps' forms.
+  //
+  // Only the params THIS flow actually references are rendered: a bundle shares
+  // one param set across every flow, but a single flow usually needs a subset —
+  // showing the rest is noise (and invites filling in values that then clear
+  // fields). Usage = the flow's own step forms plus the forms of any step it
+  // `ref:`s (legacy docs keep their referenced steps' forms in the common doc).
   const hasRef = flow.some((st) => st.ref);
+  const refForms = hasRef
+    ? flow
+        .filter((st) => st.ref)
+        .map((st) => (common && common.steps && common.steps[st.ref]
+          ? common.steps[st.ref].form || {}
+          : {}))
+    : [];
+  // A `ref:` whose common step is missing from the loaded common doc yields an
+  // empty form — fall back to rendering every declared param in that case so
+  // the user is never left without a widget for a param the flow needs.
+  const refResolvable = flow
+    .filter((st) => st.ref)
+    .every((st) => !!(common && common.steps && common.steps[st.ref]));
+  // Usage is computed by the shared engine helper so the options page and the
+  // panel can never drift apart on what "used" means.
+  const usedParams = new Set(Y.usedParamNames(flow, pbParams, refForms));
   const paramRows = [];
   if (hasRef) {
+    // Legacy index-based scope: the common doc's ${paramN} refer to its own
+    // params by position. Match against the same placeholder scan, extracting
+    // the index from each paramN occurrence.
+    const usedIdx = new Set(
+      Y.extractPlaceholderNamesDeep([
+        ...flow.map((st) => st.form || {}),
+        ...refForms,
+      ])
+        .map((n) => /^param(\d+)$/.exec(String(n).trim()))
+        .filter(Boolean)
+        .map((m) => Number(m[1]))
+    );
     commonParams.forEach((p, pIdx) => {
+      // When a referenced common step is missing from the loaded doc we cannot
+      // tell which common params are used — fall back to showing them all.
+      if (refResolvable && !usedIdx.has(pIdx)) return;
       paramRows.push({
         badge: "common",
         key: `common-param${pIdx}`,
@@ -122,6 +159,7 @@ function renderPlaybookCard(pb, common, forms) {
     });
   }
   pbParams.forEach((p) => {
+    if (p.name && !usedParams.has(String(p.name).trim())) return; // unused here
     paramRows.push({ badge: "param", key: p.name || `param-${paramRows.length}`, p });
   });
 
@@ -944,19 +982,15 @@ async function runServiceStep(svc, values) {
   }
 }
 
+// Every ${placeholder} name found in an arbitrary set of values (strings,
+// nested objects and arrays alike). Thin alias over the engine helper — used to
+// spot unresolved placeholders during execution.
+function collectPlaceholderNamesDeep(values) {
+  return Y.extractPlaceholderNamesDeep(values);
+}
+
 function collectUnresolved(values) {
-  const found = new Set();
-  const walk = (v) => {
-    if (typeof v === "string") {
-      Y.extractPlaceholderNames(v).forEach((n) => found.add(n));
-    } else if (Array.isArray(v)) {
-      v.forEach(walk);
-    } else if (v && typeof v === "object") {
-      Object.values(v).forEach(walk);
-    }
-  };
-  values.forEach(walk);
-  return Array.from(found);
+  return collectPlaceholderNamesDeep(values);
 }
 
 // Human-readable reason for ${…} names that survived resolution. Context

@@ -424,5 +424,42 @@ check("end-to-end: comments == work_notes, assign_to cleared",
   mirrorResolved.comments === "resolved by ops" && mirrorResolved.assign_to === "",
   JSON.stringify(mirrorResolved));
 
+/* ---------- 10. only used params are rendered ---------- */
+console.log("[10] per-flow param filtering");
+const paramFlow = `name: f
+flow:
+  - name: a
+    form:
+      work_notes: note \${used_param}
+      comments: ""
+  - name: b
+    form:
+      nested:
+        deep: \${deep_param}
+      list:
+        - \${deep_param}
+`;
+const parsedParamFlow = Y.parseFlow(paramFlow);
+const declared = [
+  { name: "used_param", type: "string" },
+  { name: "deep_param", type: "string" },
+  { name: "unused_param", type: "string" },
+];
+const used = Y.usedParamNames(parsedParamFlow, declared, []);
+check("only referenced params are used",
+  JSON.stringify(used) === JSON.stringify(["used_param", "deep_param"]),
+  JSON.stringify(used));
+check("deep / nested values count as usage",
+  used.indexOf("deep_param") !== -1);
+check("legacy ref forms count as usage",
+  JSON.stringify(Y.usedParamNames([{ form: {} }], declared, [{ x: "\${unused_param}" }])) ===
+  JSON.stringify(["unused_param"]));
+check("no params used -> empty list",
+  Y.usedParamNames([{ form: { state: "6" } }], declared, []).length === 0);
+check("deep extraction trims + dedups",
+  JSON.stringify(Y.extractPlaceholderNamesDeep(["\${ a }", { k: "\${a}" }, ["\${b}"]])) ===
+  JSON.stringify(["a", "b"]),
+  JSON.stringify(Y.extractPlaceholderNamesDeep(["\${ a }", { k: "\${a}" }, ["\${b}"]])));
+
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURE(S)");
 process.exit(failures === 0 ? 0 : 1);

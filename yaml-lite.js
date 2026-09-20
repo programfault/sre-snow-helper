@@ -537,7 +537,41 @@
     return names;
   }
 
-  // Replace all ${paramN} occurrences in `str` with values from `values` map.
+  // Extract every ${placeholder} name from an arbitrary value tree (strings,
+  // nested objects, arrays). Returns unique, trimmed names.
+  function extractPlaceholderNamesDeep(values) {
+    const found = new Set();
+    const walk = (v) => {
+      if (typeof v === "string") {
+        extractPlaceholderNames(v).forEach((n) => found.add(n));
+      } else if (Array.isArray(v)) {
+        v.forEach(walk);
+      } else if (v && typeof v === "object") {
+        Object.values(v).forEach(walk);
+      }
+    };
+    (Array.isArray(values) ? values : [values]).forEach(walk);
+    return Array.from(found);
+  }
+
+  // Which of the declared `params:` does a flow actually reference? Scans every
+  // step form (nested objects/arrays included) plus the forms of any legacy
+  // `ref:`'d common steps supplied by the caller. The side panel renders ONLY
+  // these params — a bundle shares one param set across all flows, so showing
+  // every declared param on every flow is noise. Returns trimmed names.
+  function usedParamNames(flow, params, refForms) {
+    const used = new Set(
+      extractPlaceholderNamesDeep([
+        ...(flow || []).map((st) => (st && st.form) || {}),
+        ...(refForms || []),
+      ])
+    );
+    return (params || [])
+      .filter((p) => p && p.name && used.has(String(p.name).trim()))
+      .map((p) => String(p.name).trim());
+  }
+
+  // Replace all ${name} occurrences in `str` with values from `values` map.
   // `values` is keyed by the placeholder token (e.g. "param0", "param1").
   // Unknown placeholders are left untouched.
   function resolvePlaceholders(str, values) {
@@ -2037,6 +2071,8 @@
     indexCommonSteps,
     parseFlow,
     extractPlaceholderNames,
+    extractPlaceholderNamesDeep,
+    usedParamNames,
     resolvePlaceholders,
     applyCommentsMirror,
     indexForms,

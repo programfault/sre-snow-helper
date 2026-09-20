@@ -114,6 +114,11 @@ groups:
      （防手滑拼错变量名后静默变输入框）。
   - 实现：`values = { ...capturedGlobals, ...userInputs }`，文件参数后写覆盖全局，天然实现优先级。
 - **命名规范**：建议 `[A-Za-z0-9_]+`；校验对含空格/特殊字符的名字告警。
+- **按需渲染（v3.3）**：`params:` 是整个 bundle 共享的参数集，但**侧边栏只渲染当前选中
+  flow 实际引用到的 param**——判定口径 = 该 flow 所有步骤 `form:`（含嵌套对象/数组）里的
+  `${name}` 出现的名字（legacy `ref:` 步骤则扫描被引用 common 步骤的 form）。
+  没被引用的 param 不渲染（避免噪音，也避免手填了值反而清空字段）；一个 flow 一个 param
+  都不用时不显示 Parameters 区。实现：引擎 `Y.usedParamNames()`，options 与 sidepanel 共用。
 - **自动补全**：编辑器里 `${` 后提示 文件参数 + 全局捕获变量（分组展示）。【已实现】
 - **迁移**：存量文档的 `${paramN}` 按各文档 `params:` 列表下标映射重写为
   `${name}`；对应下标无声明的保留原样并告警。
